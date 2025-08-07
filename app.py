@@ -55,8 +55,16 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Titre principal
-st.title("🏢 BGU-ONE Centre de Données - Tableau de Bord de Surveillance")
+# Titre principal avec logo INWI
+col_title, col_spacer, col_logo = st.columns([5, 0.5, 1])
+with col_title:
+    st.markdown("<h1 style='margin-top: 0; padding-top: 20px;'>🏢 BGU-ONE Centre de Données - Tableau de Bord de Surveillance</h1>", unsafe_allow_html=True)
+with col_spacer:
+    st.empty()
+with col_logo:
+    st.markdown("<div style='text-align: right; padding-top: 10px; padding-right: 20px;'>", unsafe_allow_html=True)
+    st.image("logo_inwi.png", width=200)
+    st.markdown("</div>", unsafe_allow_html=True)
 st.markdown("---")
 
 # Initialisation du cache
