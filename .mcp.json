@@ -1,0 +1,9 @@
+{
+    "mcpServers": {
+      "pdf-reader-mcp": {
+        "command": "npx",
+        "args": ["@vlasky/pdf-reader-mcp"],
+        "name": "PDF Reader (npx)"
+      }
+    }
+  }
