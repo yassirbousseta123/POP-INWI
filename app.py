@@ -12,6 +12,9 @@ from data_loader import DataCleaner
 import warnings
 warnings.filterwarnings('ignore')
 
+# Import Unified Period Selector
+from src.ui.period_selector import period_selector
+
 # Import Incident Lens UI
 try:
     from src.ui.incident_lens_ui import render_incident_lens_interface, render_incident_lens_summary
@@ -76,9 +79,26 @@ def load_data():
     merged_data = cleaner.merge_all_data(cleaned_data)
     return cleaned_data, merged_data
 
+# Initialize session state for period selector before anything else
+if 'unified_period' not in st.session_state:
+    end_date_default = datetime.now()
+    start_date_default = end_date_default - timedelta(days=7)
+    st.session_state.unified_period = {
+        'start_date': start_date_default,
+        'end_date': end_date_default,
+        'selection_type': 'Dernière semaine',
+        'custom_range': None
+    }
+
 # Chargement des données
 with st.spinner("Chargement des données..."):
     cleaned_data, merged_data = load_data()
+
+# Unified Period Selector in Sidebar
+start_date, end_date = period_selector.render_mini_selector()
+
+# Filter all data based on unified period
+filtered_merged_data = period_selector.filter_dataframe(merged_data) if not merged_data.empty else merged_data
 
 # Navigation horizontale
 st.markdown("## 🎯 Navigation")
@@ -89,8 +109,8 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
     "📈 Analyse temporelle",
     "🔬 Analyses EDA",
     "❄️ Analyse CLIM",
-    "🔍 Incident Lens",
     "🚪 Analyse Porte",
+    "🔍 Incident Lens",
     "🔗 Corrélations",
     "📋 Rapports",
     "💰 Simulation Coûts"
@@ -101,67 +121,12 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
 with tab1:
     st.header("📊 Vue d'ensemble du système")
     
-    if not merged_data.empty and 'Timestamp' in merged_data.columns:
-        # Sélection de la plage temporelle
-        st.subheader("📅 Sélection de la période d'analyse")
+    if not filtered_merged_data.empty and 'Timestamp' in filtered_merged_data.columns:
+        # Display current unified period
+        st.info(f"📅 Période sélectionnée: {start_date.strftime('%Y-%m-%d %H:%M')} - {end_date.strftime('%Y-%m-%d %H:%M')}")
         
-        col1, col2 = st.columns([2, 1])
-        
-        with col1:
-            # Options de plage temporelle prédéfinies
-            time_range_options = {
-                "Dernière heure": 1,
-                "Dernières 6 heures": 6,
-                "Dernières 12 heures": 12,
-                "Dernières 24 heures": 24,
-                "Derniers 7 jours": 24 * 7,
-                "Derniers 30 jours": 24 * 30,
-                "Personnalisé": 0
-            }
-            
-            selected_range = st.selectbox(
-                "Choisir une période:",
-                options=list(time_range_options.keys()),
-                index=3  # Default to "Dernières 24 heures"
-            )
-        
-        with col2:
-            # Pour la sélection personnalisée
-            if selected_range == "Personnalisé":
-                min_date = merged_data['Timestamp'].min()
-                max_date = merged_data['Timestamp'].max()
-                
-                date_range = st.date_input(
-                    "Plage de dates personnalisée:",
-                    value=(max_date - timedelta(days=7), max_date),
-                    min_value=min_date,
-                    max_value=max_date
-                )
-            else:
-                # Calculer la plage basée sur la sélection
-                hours_back = time_range_options[selected_range]
-                end_time = merged_data['Timestamp'].max()
-                start_time = end_time - timedelta(hours=hours_back)
-                date_range = (start_time, end_time)
-        
-        # Filtrer les données selon la plage sélectionnée
-        if selected_range == "Personnalisé":
-            if isinstance(date_range, tuple) and len(date_range) == 2:
-                start_date, end_date = date_range
-                mask = (merged_data['Timestamp'].dt.date >= start_date) & \
-                       (merged_data['Timestamp'].dt.date <= end_date)
-            else:
-                # Fallback si la sélection de date échoue
-                end_time = merged_data['Timestamp'].max()
-                start_time = end_time - timedelta(days=7)
-                mask = (merged_data['Timestamp'] >= start_time) & \
-                       (merged_data['Timestamp'] <= end_time)
-        else:
-            start_time, end_time = date_range
-            mask = (merged_data['Timestamp'] >= start_time) & \
-                   (merged_data['Timestamp'] <= end_time)
-        
-        filtered_data = merged_data.loc[mask]
+        # Use the already filtered data from unified selector
+        filtered_data = filtered_merged_data
         
         if not filtered_data.empty:
             # Métriques importantes
@@ -619,53 +584,37 @@ with tab1:
 with tab2:
     st.header("📈 Analyse temporelle interactive")
     
+    # Display current unified period
+    st.info(f"📅 Période sélectionnée: {start_date.strftime('%Y-%m-%d %H:%M')} - {end_date.strftime('%Y-%m-%d %H:%M')}")
+    
     # Sélection des données
-    col1, col2 = st.columns([3, 1])
+    # Multi-sélection des données à afficher
+    available_metrics = {
+        'Temp_Ambiante': '🌡️ Température Ambiante (°C)',
+        'Temp_Exterieure': '🌤️ Température Extérieure (°C)',
+        'Puissance_IT': '💻 Puissance IT (kW)',
+        'Puissance_Generale': '⚡ Puissance Générale (kW)',
+        'Puissance_CLIM': '❄️ Puissance CLIM (kW)',
+        'CLIM_A_Status': '❄️ État CLIM A',
+        'CLIM_B_Status': '❄️ État CLIM B',
+        'CLIM_C_Status': '❄️ État CLIM C',
+        'CLIM_D_Status': '❄️ État CLIM D',
+        'Porte_Status': '🚪 État Porte'
+    }
     
-    with col1:
-        # Multi-sélection des données à afficher
-        available_metrics = {
-            'Temp_Ambiante': '🌡️ Température Ambiante (°C)',
-            'Temp_Exterieure': '🌤️ Température Extérieure (°C)',
-            'Puissance_IT': '💻 Puissance IT (kW)',
-            'Puissance_Generale': '⚡ Puissance Générale (kW)',
-            'Puissance_CLIM': '❄️ Puissance CLIM (kW)',
-            'CLIM_A_Status': '❄️ État CLIM A',
-            'CLIM_B_Status': '❄️ État CLIM B',
-            'CLIM_C_Status': '❄️ État CLIM C',
-            'CLIM_D_Status': '❄️ État CLIM D',
-            'Porte_Status': '🚪 État Porte'
-        }
-        
-        # Filtrer les métriques disponibles
-        available_cols = [col for col in available_metrics.keys() if col in merged_data.columns]
-        
-        selected_metrics = st.multiselect(
-            "Sélectionner les données à afficher:",
-            available_cols,
-            default=available_cols[:3] if len(available_cols) >= 3 else available_cols,
-            format_func=lambda x: available_metrics[x]
-        )
+    # Filtrer les métriques disponibles
+    available_cols = [col for col in available_metrics.keys() if col in filtered_merged_data.columns]
     
-    with col2:
-        # Sélection de la plage de dates
-        if 'Timestamp' in merged_data.columns:
-            min_date = merged_data['Timestamp'].min()
-            max_date = merged_data['Timestamp'].max()
-            
-            date_range = st.date_input(
-                "Plage de dates:",
-                value=(min_date, max_date),
-                min_value=min_date,
-                max_value=max_date
-            )
+    selected_metrics = st.multiselect(
+        "Sélectionner les données à afficher:",
+        available_cols,
+        default=available_cols[:3] if len(available_cols) >= 3 else available_cols,
+        format_func=lambda x: available_metrics[x]
+    )
     
-    # Filtrage des données
-    if len(date_range) == 2 and selected_metrics:
-        start_date, end_date = date_range
-        mask = (merged_data['Timestamp'].dt.date >= start_date) & \
-               (merged_data['Timestamp'].dt.date <= end_date)
-        filtered_data = merged_data.loc[mask]
+    # Use unified filtered data
+    if selected_metrics and not filtered_merged_data.empty:
+        filtered_data = filtered_merged_data
         
         # Création du graphique interactif
         fig = make_subplots(
@@ -747,16 +696,204 @@ with tab2:
                 export_data = filtered_data[['Timestamp'] + selected_metrics]
                 export_data.to_csv("export_donnees.csv", index=False)
                 st.success("Données exportées!")
+    
+    # Profile Horaire Moyen Unifié
+    st.subheader("📊 Profil Horaire Moyen Unifié")
+    st.write("Visualisation comparative des profils horaires moyens pour Température Ambiante, Puissance IT et Température Extérieure")
+    
+    if not filtered_merged_data.empty:
+        # Prepare hourly data for the three metrics
+        hourly_data = filtered_merged_data.copy()
+        hourly_data['Heure'] = hourly_data['Timestamp'].dt.hour
+        
+        # Create figure with secondary y-axis
+        fig = make_subplots(specs=[[{"secondary_y": True}]])
+        
+        # Temperature Ambiante
+        if 'Temp_Ambiante' in hourly_data.columns:
+            hourly_avg_ambiante = hourly_data.groupby('Heure')['Temp_Ambiante'].agg(['mean', 'std']).reset_index()
+            
+            # Add mean line
+            fig.add_trace(
+                go.Scatter(
+                    x=hourly_avg_ambiante['Heure'],
+                    y=hourly_avg_ambiante['mean'],
+                    mode='lines+markers',
+                    name='Température Ambiante (°C)',
+                    line=dict(color='#FF6B6B', width=3),
+                    marker=dict(size=8),
+                    yaxis='y'
+                ),
+                secondary_y=False
+            )
+            
+            # Add std band
+            fig.add_trace(
+                go.Scatter(
+                    x=list(hourly_avg_ambiante['Heure']) + list(hourly_avg_ambiante['Heure'][::-1]),
+                    y=list(hourly_avg_ambiante['mean'] + hourly_avg_ambiante['std']) + list((hourly_avg_ambiante['mean'] - hourly_avg_ambiante['std'])[::-1]),
+                    fill='toself',
+                    fillcolor='rgba(255,107,107,0.15)',
+                    line=dict(color='rgba(255,255,255,0)'),
+                    name='± Écart-type Temp Ambiante',
+                    showlegend=False,
+                    yaxis='y'
+                ),
+                secondary_y=False
+            )
+        
+        # Temperature Extérieure
+        if 'Temp_Exterieure' in hourly_data.columns:
+            hourly_avg_ext = hourly_data.groupby('Heure')['Temp_Exterieure'].agg(['mean', 'std']).reset_index()
+            
+            # Add mean line
+            fig.add_trace(
+                go.Scatter(
+                    x=hourly_avg_ext['Heure'],
+                    y=hourly_avg_ext['mean'],
+                    mode='lines+markers',
+                    name='Température Extérieure (°C)',
+                    line=dict(color='#4ECDC4', width=3),
+                    marker=dict(size=8),
+                    yaxis='y'
+                ),
+                secondary_y=False
+            )
+            
+            # Add std band
+            fig.add_trace(
+                go.Scatter(
+                    x=list(hourly_avg_ext['Heure']) + list(hourly_avg_ext['Heure'][::-1]),
+                    y=list(hourly_avg_ext['mean'] + hourly_avg_ext['std']) + list((hourly_avg_ext['mean'] - hourly_avg_ext['std'])[::-1]),
+                    fill='toself',
+                    fillcolor='rgba(78,205,196,0.15)',
+                    line=dict(color='rgba(255,255,255,0)'),
+                    name='± Écart-type Temp Extérieure',
+                    showlegend=False,
+                    yaxis='y'
+                ),
+                secondary_y=False
+            )
+        
+        # Puissance IT (on secondary y-axis)
+        if 'Puissance_IT' in hourly_data.columns:
+            hourly_avg_it = hourly_data.groupby('Heure')['Puissance_IT'].agg(['mean', 'std']).reset_index()
+            
+            # Add mean line
+            fig.add_trace(
+                go.Scatter(
+                    x=hourly_avg_it['Heure'],
+                    y=hourly_avg_it['mean'],
+                    mode='lines+markers',
+                    name='Puissance IT (kW)',
+                    line=dict(color='#6C5CE7', width=3, dash='dot'),
+                    marker=dict(size=8, symbol='square'),
+                    yaxis='y2'
+                ),
+                secondary_y=True
+            )
+            
+            # Add std band
+            fig.add_trace(
+                go.Scatter(
+                    x=list(hourly_avg_it['Heure']) + list(hourly_avg_it['Heure'][::-1]),
+                    y=list(hourly_avg_it['mean'] + hourly_avg_it['std']) + list((hourly_avg_it['mean'] - hourly_avg_it['std'])[::-1]),
+                    fill='toself',
+                    fillcolor='rgba(108,92,231,0.15)',
+                    line=dict(color='rgba(255,255,255,0)'),
+                    name='± Écart-type Puissance IT',
+                    showlegend=False,
+                    yaxis='y2'
+                ),
+                secondary_y=True
+            )
+        
+        # Update layout
+        fig.update_xaxes(
+            title_text="Heure de la journée",
+            tickmode='linear',
+            tick0=0,
+            dtick=2,
+            range=[-0.5, 23.5]
+        )
+        
+        fig.update_yaxes(
+            title_text="Température (°C)",
+            secondary_y=False,
+            gridcolor='rgba(128,128,128,0.2)'
+        )
+        
+        fig.update_yaxes(
+            title_text="Puissance IT (kW)",
+            secondary_y=True,
+            gridcolor='rgba(128,128,128,0.1)'
+        )
+        
+        fig.update_layout(
+            title="Profil Horaire Moyen - Vue Comparative",
+            height=500,
+            hovermode='x unified',
+            legend=dict(
+                orientation="h",
+                yanchor="bottom",
+                y=-0.2,
+                xanchor="center",
+                x=0.5
+            ),
+            template='plotly_white',
+            margin=dict(l=50, r=50, t=50, b=100)
+        )
+        
+        # Add grid
+        fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor='rgba(128,128,128,0.2)')
+        
+        st.plotly_chart(fig, use_container_width=True)
+        
+        # Add insights
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            if 'Temp_Ambiante' in hourly_data.columns:
+                peak_hour_amb = hourly_avg_ambiante.loc[hourly_avg_ambiante['mean'].idxmax(), 'Heure']
+                peak_temp_amb = hourly_avg_ambiante['mean'].max()
+                st.metric(
+                    "🌡️ Pic Temp Ambiante",
+                    f"{peak_temp_amb:.1f}°C",
+                    f"à {int(peak_hour_amb)}h"
+                )
+        
+        with col2:
+            if 'Puissance_IT' in hourly_data.columns:
+                peak_hour_it = hourly_avg_it.loc[hourly_avg_it['mean'].idxmax(), 'Heure']
+                peak_power_it = hourly_avg_it['mean'].max()
+                st.metric(
+                    "💻 Pic Puissance IT",
+                    f"{peak_power_it:.1f} kW",
+                    f"à {int(peak_hour_it)}h"
+                )
+        
+        with col3:
+            if 'Temp_Exterieure' in hourly_data.columns:
+                peak_hour_ext = hourly_avg_ext.loc[hourly_avg_ext['mean'].idxmax(), 'Heure']
+                peak_temp_ext = hourly_avg_ext['mean'].max()
+                st.metric(
+                    "🌤️ Pic Temp Extérieure",
+                    f"{peak_temp_ext:.1f}°C",
+                    f"à {int(peak_hour_ext)}h"
+                )
 
 # 3. ANALYSES EDA
 with tab3:
     st.header("🔬 Analyses exploratoires (EDA)")
     
-    if not merged_data.empty and 'Timestamp' in merged_data.columns:
+    # Display current unified period
+    st.info(f"📅 Période sélectionnée: {start_date.strftime('%Y-%m-%d %H:%M')} - {end_date.strftime('%Y-%m-%d %H:%M')}")
+    
+    if not filtered_merged_data.empty and 'Timestamp' in filtered_merged_data.columns:
         # Sélection des métriques (multi-sélection)
         numeric_cols = ['Temp_Ambiante', 'Temp_Exterieure', 'Puissance_IT', 
                        'Puissance_Generale', 'Puissance_CLIM']
-        available_numeric = [col for col in numeric_cols if col in merged_data.columns]
+        available_numeric = [col for col in numeric_cols if col in filtered_merged_data.columns]
         
         metric_labels = {
             'Temp_Ambiante': '🌡️ Température Ambiante',
@@ -773,57 +910,8 @@ with tab3:
             format_func=lambda x: metric_labels.get(x, x)
         )
         
-        # Sélection globale de la plage temporelle
-        st.subheader("📅 Sélection de la période d'analyse")
-        col1, col2 = st.columns([2, 1])
-        
-        with col1:
-            time_range_options = {
-                "Toutes les données": 0,
-                "Dernière heure": 1,
-                "Dernières 6 heures": 6,
-                "Dernières 12 heures": 12,
-                "Dernières 24 heures": 24,
-                "Derniers 7 jours": 24 * 7,
-                "Derniers 30 jours": 24 * 30,
-                "Personnalisé": -1
-            }
-            
-            selected_range = st.selectbox(
-                "Période globale:",
-                options=list(time_range_options.keys()),
-                index=0
-            )
-        
-        with col2:
-            if selected_range == "Personnalisé":
-                min_date = merged_data['Timestamp'].min()
-                max_date = merged_data['Timestamp'].max()
-                
-                date_range = st.date_input(
-                    "Plage de dates:",
-                    value=(max_date - timedelta(days=7), max_date),
-                    min_value=min_date,
-                    max_value=max_date
-                )
-            else:
-                date_range = None
-        
-        # Appliquer le filtre temporel global
-        if selected_range == "Toutes les données":
-            filtered_data = merged_data.copy()
-        elif selected_range == "Personnalisé" and date_range and len(date_range) == 2:
-            start_date, end_date = date_range
-            mask = (merged_data['Timestamp'].dt.date >= start_date) & \
-                   (merged_data['Timestamp'].dt.date <= end_date)
-            filtered_data = merged_data.loc[mask]
-        else:
-            hours_back = time_range_options[selected_range]
-            end_time = merged_data['Timestamp'].max()
-            start_time = end_time - timedelta(hours=hours_back)
-            mask = (merged_data['Timestamp'] >= start_time) & \
-                   (merged_data['Timestamp'] <= end_time)
-            filtered_data = merged_data.loc[mask]
+        # Use unified filtered data
+        filtered_data = filtered_merged_data
     
         
         # Afficher les analyses pour chaque métrique sélectionnée
@@ -1041,21 +1129,22 @@ with tab3:
 # 4. ANALYSE CLIM
 with tab4:
     st.header("❄️ Analyse de l'impact des CLIMs sur la température")
+    st.info(f"📅 Période sélectionnée: {start_date.strftime('%Y-%m-%d %H:%M')} - {end_date.strftime('%Y-%m-%d %H:%M')}")
     
     # Préparer les données CLIM
-    clim_columns = [col for col in merged_data.columns if 'CLIM' in col and 'Status' in col]
+    clim_columns = [col for col in filtered_merged_data.columns if 'CLIM' in col and 'Status' in col]
     
-    if clim_columns and 'Temp_Ambiante' in merged_data.columns:
+    if clim_columns and 'Temp_Ambiante' in filtered_merged_data.columns:
         # Info sur les données disponibles
         st.info(f"**CLIMs détectées:** {', '.join(clim_columns)}")
         
         # Vérifier l'état des CLIMs
         clim_status_summary = []
         for clim in clim_columns:
-            if clim in merged_data.columns:
-                total_points = len(merged_data)
-                on_points = (merged_data[clim] == 1).sum()
-                off_points = (merged_data[clim] == 0).sum()
+            if clim in filtered_merged_data.columns:
+                total_points = len(filtered_merged_data)
+                on_points = (filtered_merged_data[clim] == 1).sum()
+                off_points = (filtered_merged_data[clim] == 0).sum()
                 clim_status_summary.append({
                     'CLIM': clim,
                     'Total Points': total_points,
@@ -1081,16 +1170,16 @@ with tab4:
             selected_clim = st.selectbox("Sélectionner un CLIM", clim_columns)
         
         # Détecter les arrêts de CLIM (passage de 1 à 0)
-        merged_data['CLIM_Stop'] = (merged_data[selected_clim].shift(1) == 1) & (merged_data[selected_clim] == 0)
+        filtered_merged_data['CLIM_Stop'] = (filtered_merged_data[selected_clim].shift(1) == 1) & (filtered_merged_data[selected_clim] == 0)
         
         # Points d'arrêt
-        stop_points = merged_data[merged_data['CLIM_Stop']]['Timestamp'].tolist()
+        stop_points = filtered_merged_data[filtered_merged_data['CLIM_Stop']]['Timestamp'].tolist()
         
         # Debug info
         with st.expander("🔍 Informations de débogage"):
-            st.write(f"Total de points de données: {len(merged_data)}")
-            st.write(f"Points avec température valide: {merged_data['Temp_Ambiante'].notna().sum()}")
-            st.write(f"Valeurs uniques de {selected_clim}: {merged_data[selected_clim].value_counts().to_dict()}")
+            st.write(f"Total de points de données: {len(filtered_merged_data)}")
+            st.write(f"Points avec température valide: {filtered_merged_data['Temp_Ambiante'].notna().sum()}")
+            st.write(f"Valeurs uniques de {selected_clim}: {filtered_merged_data[selected_clim].value_counts().to_dict()}")
             st.write(f"Transitions détectées (1→0): {len(stop_points)}")
             if stop_points:
                 st.write(f"Premiers arrêts: {[t.strftime('%Y-%m-%d %H:%M') for t in stop_points[:5]]}")
@@ -1107,16 +1196,16 @@ with tab4:
             
             for i, stop_time in enumerate(stop_points):  # Analyser tous les événements
                 # Température au moment de l'arrêt
-                temp_at_stop_idx = merged_data[merged_data['Timestamp'] <= stop_time]['Temp_Ambiante'].last_valid_index()
+                temp_at_stop_idx = filtered_merged_data[filtered_merged_data['Timestamp'] <= stop_time]['Temp_Ambiante'].last_valid_index()
                 
                 if temp_at_stop_idx is not None:
-                    temp_at_stop = merged_data.loc[temp_at_stop_idx, 'Temp_Ambiante']
+                    temp_at_stop = filtered_merged_data.loc[temp_at_stop_idx, 'Temp_Ambiante']
                     
                     # Température après X minutes
                     time_after = stop_time + timedelta(minutes=minutes_after)
-                    after_mask = (merged_data['Timestamp'] > stop_time) & \
-                                (merged_data['Timestamp'] <= time_after)
-                    temps_after = merged_data[after_mask]['Temp_Ambiante'].dropna()
+                    after_mask = (filtered_merged_data['Timestamp'] > stop_time) & \
+                                (filtered_merged_data['Timestamp'] <= time_after)
+                    temps_after = filtered_merged_data[after_mask]['Temp_Ambiante'].dropna()
                     
                     if len(temps_after) > 0:
                         # Prendre la dernière température dans la fenêtre
@@ -1364,9 +1453,9 @@ with tab4:
                     viz_start = stop_time - timedelta(minutes=15)
                     viz_end = stop_time + timedelta(minutes=minutes_after + 10)
                     
-                    viz_mask = (merged_data['Timestamp'] >= viz_start) & \
-                              (merged_data['Timestamp'] <= viz_end)
-                    viz_data = merged_data[viz_mask].copy()
+                    viz_mask = (filtered_merged_data['Timestamp'] >= viz_start) & \
+                              (filtered_merged_data['Timestamp'] <= viz_end)
+                    viz_data = filtered_merged_data[viz_mask].copy()
                     
                     if len(viz_data) > 0:
                         fig_timeline = go.Figure()
@@ -1454,37 +1543,20 @@ with tab4:
 
 # 5. INCIDENT LENS
 with tab5:
-    if render_incident_lens_interface:
-        render_incident_lens_interface()
-    else:
-        st.error("🚫 Incident Lens non disponible - problème d'import des modules")
-        st.info("📋 Vérifiez que tous les modules sont correctement installés")
-
-# 6. ANALYSE PORTE
-with tab6:
     st.header("🚪 Analyse de l'impact de l'ouverture de porte")
     
     # Explication d'un cycle
     st.info("💡 **Qu'est-ce qu'un cycle ?** Un cycle correspond à une séquence complète d'ouverture et de fermeture de la porte. Il commence quand la porte passe de l'état fermé à ouvert, et se termine quand elle revient à l'état fermé. L'analyse suit l'évolution de la température pendant chaque cycle.")
     
-    if 'Porte_Status' in merged_data.columns and 'Temp_Ambiante' in merged_data.columns:
+    if 'Porte_Status' in filtered_merged_data.columns and 'Temp_Ambiante' in merged_data.columns:
         # Informations sur les données de porte
         st.subheader("📊 État actuel des données de porte")
         
-        porte_data_raw = merged_data[['Timestamp', 'Porte_Status', 'Temp_Ambiante']].copy()
+        porte_data_raw = filtered_merged_data[['Timestamp', 'Porte_Status', 'Temp_Ambiante']].copy()
         
         # Statistiques des données de porte
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            total_records = len(porte_data_raw)
-            st.metric("Total enregistrements", f"{total_records:,}")
-        with col2:
-            open_records = porte_data_raw['Porte_Status'].notna().sum()
-            st.metric("Événements d'ouverture", open_records)
-        with col3:
-            if open_records > 0:
-                coverage = (open_records / total_records) * 100
-                st.metric("Couverture données", f"{coverage:.1f}%")
+        open_records = porte_data_raw['Porte_Status'].notna().sum()
+        st.metric("Événements d'ouverture", open_records)
         
         # Afficher un échantillon des données de porte
         st.subheader("🔍 Échantillon des événements d'ouverture")
@@ -1940,8 +2012,8 @@ with tab6:
                 with col3:
                     st.metric("Durée totale", f"{cycles_df['duration_sec'].sum()/60:.1f} min")
                 with col4:
-                    if len(merged_data) > 0:
-                        time_range = (merged_data['Timestamp'].max() - merged_data['Timestamp'].min()).total_seconds() / 3600
+                    if len(filtered_merged_data) > 0:
+                        time_range = (filtered_merged_data['Timestamp'].max() - filtered_merged_data['Timestamp'].min()).total_seconds() / 3600
                         if time_range > 0:
                             freq = len(cycles_df) / time_range
                             st.metric("Fréquence", f"{freq:.2f} cycles/h")
@@ -1964,7 +2036,7 @@ with tab6:
                 
                 # NOUVELLE APPROCHE: Prétraiter les données de température
                 # 1. Créer une copie pour le traitement
-                temp_processed = merged_data[['Timestamp', 'Temp_Ambiante']].copy()
+                temp_processed = filtered_merged_data[['Timestamp', 'Temp_Ambiante']].copy()
                 temp_processed = temp_processed.sort_values('Timestamp')
                 
                 # 2. Statistiques avant traitement
@@ -1993,14 +2065,14 @@ with tab6:
                 nan_after = temp_processed['Temp_Ambiante_Final'].isna().sum()
                 st.write(f"**Données température - Après traitement:** {total_rows - nan_after}/{total_rows} valeurs valides")
                 
-                # 5. Remplacer dans merged_data
-                merged_data['Temp_Ambiante_Original'] = merged_data['Temp_Ambiante'].copy()
-                merged_data = merged_data.merge(
+                # 5. Remplacer dans filtered_merged_data
+                filtered_merged_data['Temp_Ambiante_Original'] = filtered_merged_data['Temp_Ambiante'].copy()
+                filtered_merged_data = filtered_merged_data.merge(
                     temp_processed[['Timestamp', 'Temp_Ambiante_Final']], 
                     on='Timestamp', 
                     how='left'
                 )
-                merged_data['Temp_Ambiante'] = merged_data['Temp_Ambiante_Final']
+                filtered_merged_data['Temp_Ambiante'] = filtered_merged_data['Temp_Ambiante_Final']
                 
                 # Debug: Variables pour suivre le traitement
                 cycles_with_no_temp_data = 0
@@ -2033,9 +2105,9 @@ with tab6:
                     before_window_start = open_time - timedelta(minutes=30)
                     before_window_end = open_time
                     
-                    before_data = merged_data[
-                        (merged_data['Timestamp'] >= before_window_start) & 
-                        (merged_data['Timestamp'] < before_window_end)
+                    before_data = filtered_merged_data[
+                        (filtered_merged_data['Timestamp'] >= before_window_start) & 
+                        (filtered_merged_data['Timestamp'] < before_window_end)
                     ].copy()
                     
                     # Prendre la moyenne des 5 dernières minutes si possible
@@ -2053,9 +2125,9 @@ with tab6:
                     after_window_start = open_time
                     after_window_end = close_time + timedelta(minutes=10)
                     
-                    after_data = merged_data[
-                        (merged_data['Timestamp'] >= after_window_start) & 
-                        (merged_data['Timestamp'] <= after_window_end)
+                    after_data = filtered_merged_data[
+                        (filtered_merged_data['Timestamp'] >= after_window_start) & 
+                        (filtered_merged_data['Timestamp'] <= after_window_end)
                     ].copy()
                     
                     # Prendre le maximum pendant le cycle (pire cas)
@@ -2068,9 +2140,9 @@ with tab6:
                     full_window_start = before_window_start
                     full_window_end = after_window_end
                     
-                    full_cycle_data = merged_data[
-                        (merged_data['Timestamp'] >= full_window_start) & 
-                        (merged_data['Timestamp'] <= full_window_end)
+                    full_cycle_data = filtered_merged_data[
+                        (filtered_merged_data['Timestamp'] >= full_window_start) & 
+                        (filtered_merged_data['Timestamp'] <= full_window_end)
                     ].copy()
                     
                     # Debug: Afficher les infos de matching température pour les premiers cycles
@@ -2190,8 +2262,105 @@ with tab6:
                     
                     # Graphiques d'analyse
                     
-                    # 1. Graphique principal: Évolution par cycle
-                    st.subheader("📊 Évolution de température par cycle d'ouverture")
+                    # 1. Sélection individuelle de cycle avec dropdown
+                    st.subheader("📈 Évolution temporelle de la température par cycle")
+                    
+                    # Créer le dropdown pour sélectionner un cycle spécifique
+                    cycle_idx = st.selectbox(
+                        "Sélectionner un cycle à visualiser",
+                        range(len(door_cycles)),
+                        format_func=lambda x: f"Cycle {x+1} - {door_cycles[x]['Open_Time'].strftime('%Y-%m-%d %H:%M')} (ΔT: {door_cycles[x]['Delta_Temp']:.2f}°C, Durée: {door_cycles[x]['Duration_min']:.1f} min)"
+                    )
+                    
+                    if cycle_idx is not None:
+                        selected_cycle = door_cycles[cycle_idx]
+                        
+                        # Visualisation détaillée du cycle sélectionné
+                        cycle_data = selected_cycle['Cycle_Data']
+                        if len(cycle_data) > 0:
+                            fig_selected = go.Figure()
+                            
+                            # Température
+                            fig_selected.add_trace(go.Scatter(
+                                x=cycle_data['Timestamp'],
+                                y=cycle_data['Temp_Ambiante'],
+                                mode='lines+markers',
+                                name='Température',
+                                line=dict(color='red', width=2),
+                                marker=dict(size=6)
+                            ))
+                            
+                            # Marquer l'ouverture de porte
+                            fig_selected.add_shape(
+                                type="line",
+                                x0=selected_cycle['Open_Time'], x1=selected_cycle['Open_Time'],
+                                y0=0, y1=1,
+                                yref="paper",
+                                line=dict(color="green", width=2, dash="dash")
+                            )
+                            fig_selected.add_annotation(
+                                x=selected_cycle['Open_Time'],
+                                y=1.05,
+                                yref="paper",
+                                text="Ouverture",
+                                showarrow=False
+                            )
+                            
+                            # Marquer la fermeture de porte
+                            fig_selected.add_shape(
+                                type="line",
+                                x0=selected_cycle['Close_Time'], x1=selected_cycle['Close_Time'],
+                                y0=0, y1=1,
+                                yref="paper",
+                                line=dict(color="orange", width=2, dash="dash")
+                            )
+                            fig_selected.add_annotation(
+                                x=selected_cycle['Close_Time'],
+                                y=1.05,
+                                yref="paper",
+                                text="Fermeture",
+                                showarrow=False
+                            )
+                            
+                            # Ajouter les lignes horizontales pour les températures avant/après
+                            fig_selected.add_hline(
+                                y=selected_cycle['Temp_Before'],
+                                line_dash="dot",
+                                line_color="blue",
+                                annotation_text=f"Temp avant: {selected_cycle['Temp_Before']:.1f}°C"
+                            )
+                            
+                            fig_selected.add_hline(
+                                y=selected_cycle['Temp_After'],
+                                line_dash="dot",
+                                line_color="purple",
+                                annotation_text=f"Temp après: {selected_cycle['Temp_After']:.1f}°C"
+                            )
+                            
+                            fig_selected.update_layout(
+                                title=f"Cycle {cycle_idx+1} - {selected_cycle['Open_Time'].strftime('%Y-%m-%d %H:%M')} (Durée: {selected_cycle['Duration_min']:.1f} min, ΔT: {selected_cycle['Delta_Temp']:.2f}°C)",
+                                xaxis_title="Temps",
+                                yaxis_title="Température (°C)",
+                                height=450,
+                                hovermode='x unified'
+                            )
+                            
+                            st.plotly_chart(fig_selected, use_container_width=True)
+                            
+                            # Afficher les détails du cycle sélectionné
+                            col1, col2, col3, col4 = st.columns(4)
+                            with col1:
+                                st.metric("Température avant", f"{selected_cycle['Temp_Before']:.1f}°C")
+                            with col2:
+                                st.metric("Température après", f"{selected_cycle['Temp_After']:.1f}°C")
+                            with col3:
+                                st.metric("Variation", f"{selected_cycle['Delta_Temp']:.2f}°C",
+                                        delta=f"{'↑' if selected_cycle['Delta_Temp'] > 0 else '↓'} {abs(selected_cycle['Delta_Temp']):.2f}°C")
+                            with col4:
+                                st.metric("Durée", f"{selected_cycle['Duration_min']:.1f} min")
+                    
+                    # 2. Graphique comparatif: Vue d'ensemble de tous les cycles
+                    st.subheader("📊 Comparaison de tous les cycles")
                     
                     fig = go.Figure()
                     
@@ -2234,54 +2403,11 @@ with tab6:
                     
                     st.plotly_chart(fig, use_container_width=True)
                     
-                    # 2. Graphiques de synthèse
-                    col1, col2 = st.columns(2)
+                    # 2. Graphique de corrélation durée vs changement température
+                    st.subheader("📊 Analyse de corrélation")
                     
-                    with col1:
-                        # Graphique des changements de température par cycle
-                        fig = go.Figure()
-                        
-                        # Vérifier qu'il y a des données valides
-                        valid_data = df_impacts.dropna(subset=['Delta_Temp', 'Duree_Analyse'])
-                        
-                        if len(valid_data) > 0:
-                            fig.add_trace(go.Scatter(
-                                x=list(range(len(valid_data))),
-                                y=valid_data['Delta_Temp'],
-                                mode='markers+lines',
-                                marker=dict(
-                                    size=10,  # Taille fixe puisque la durée est maintenant constante
-                                    color=valid_data['Delta_Temp'],
-                                    colorscale='RdBu_r',
-                                    showscale=True,
-                                    colorbar=dict(title="ΔT (°C)")
-                                ),
-                                line=dict(width=2),
-                                name='Changement température',
-                                text=[f"Durée cycle: {d:.1f} min<br>ΔT: {t:.2f}°C" 
-                                      for d, t in zip(valid_data['Duree_Analyse'], valid_data['Delta_Temp'])],
-                                hovertemplate='%{text}<extra></extra>'
-                            ))
-                            
-                            fig.add_hline(y=0, line_dash="dash", line_color="gray")
-                        else:
-                            # Pas de données valides
-                            fig.add_annotation(
-                                text="Aucune donnée valide à afficher",
-                                xref="paper", yref="paper",
-                                x=0.5, y=0.5, showarrow=False
-                            )
-                        
-                        fig.update_layout(
-                            title="Changement de température par cycle",
-                            xaxis_title="Cycle d'ouverture",
-                            yaxis_title="ΔT ouverture → fermeture (°C)",
-                            height=400
-                        )
-                        
-                        st.plotly_chart(fig, use_container_width=True)
-                    
-                    with col2:
+                    # Utiliser une seule colonne au lieu de deux
+                    with st.container():
                         # Corrélation durée vs changement température
                         fig = go.Figure()
                         
@@ -2389,389 +2515,331 @@ with tab6:
     else:
         st.warning("Données de porte ou de température manquantes pour l'analyse.")
 
+# 6. ANALYSE PORTE
+with tab6:
+    st.info(f"📅 Période sélectionnée: {start_date.strftime('%Y-%m-%d %H:%M')} - {end_date.strftime('%Y-%m-%d %H:%M')}")
+    if render_incident_lens_interface:
+        # Pass filtered data to Incident Lens
+        render_incident_lens_interface(data=filtered_merged_data, start_date=start_date, end_date=end_date)
+    else:
+        st.error("🚫 Incident Lens non disponible - problème d'import des modules")
+        st.info("📋 Vérifiez que tous les modules sont correctement installés")
+
 # 7. CORRÉLATIONS
 with tab7:
-    st.header("🔗 Analyse des corrélations")
+    st.header("🔗 Analyse des Relations entre Variables")
+    st.info(f"📅 Période sélectionnée: {start_date.strftime('%Y-%m-%d %H:%M')} - {end_date.strftime('%Y-%m-%d %H:%M')}")
     
     # Sélection des variables pour la corrélation
     numeric_vars = ['Temp_Ambiante', 'Temp_Exterieure', 'Puissance_IT', 'Porte_Status']
     
     # Ajouter les colonnes CLIM individuelles si elles existent
-    clim_status_columns = [col for col in merged_data.columns if 'CLIM' in col and 'Status' in col]
+    clim_status_columns = [col for col in filtered_merged_data.columns if 'CLIM' in col and 'Status' in col]
     numeric_vars.extend(clim_status_columns)
     
-    available_vars = [var for var in numeric_vars if var in merged_data.columns]
+    available_vars = [var for var in numeric_vars if var in filtered_merged_data.columns]
     
     if len(available_vars) >= 2:
         # Create a copy for correlation calculation to avoid modifying original data
-        corr_data = merged_data[available_vars].copy()
+        corr_data = filtered_merged_data[available_vars].copy()
         
-        # Debug section - can be toggled
-        with st.expander("🔍 Détails techniques (Debug)", expanded=False):
-            st.write("**Qualité des données avant traitement:**")
-            data_info = []
-            for col in available_vars:
-                if col in corr_data.columns:
-                    data_info.append({
-                        'Variable': col,
-                        'Type': str(corr_data[col].dtype),
-                        'Non-NaN': corr_data[col].notna().sum(),
-                        'NaN': corr_data[col].isna().sum(),
-                        'Unique': corr_data[col].nunique(),
-                        'Min': corr_data[col].min() if pd.api.types.is_numeric_dtype(corr_data[col]) else 'N/A',
-                        'Max': corr_data[col].max() if pd.api.types.is_numeric_dtype(corr_data[col]) else 'N/A'
-                    })
-            st.dataframe(pd.DataFrame(data_info))
         
-        # Ensure Porte_Status is numeric if it exists
+        # Convert Porte_Status to numeric if needed
         if 'Porte_Status' in corr_data.columns:
-            # Convert to numeric and fill NaN with 0 (assuming 0 means closed)
+            if corr_data['Porte_Status'].dtype == 'object':
+                corr_data['Porte_Status'] = corr_data['Porte_Status'].map({
+                    'Open': 1, 'Ouvert': 1, 'open': 1, '1': 1, 1: 1,
+                    'Close': 0, 'Fermé': 0, 'closed': 0, '0': 0, 0: 0
+                })
             corr_data['Porte_Status'] = pd.to_numeric(corr_data['Porte_Status'], errors='coerce')
-            # Fill NaN values with the most common value or 0
-            if corr_data['Porte_Status'].notna().any():
-                corr_data['Porte_Status'] = corr_data['Porte_Status'].fillna(corr_data['Porte_Status'].mode()[0] if len(corr_data['Porte_Status'].mode()) > 0 else 0)
-            else:
-                corr_data['Porte_Status'] = corr_data['Porte_Status'].fillna(0)
         
-        # Ensure CLIM_Status columns are numeric
-        for clim_col in clim_status_columns:
-            if clim_col in corr_data.columns:
-                # Convert to numeric and fill NaN with 0 (assuming 0 means OFF)
-                corr_data[clim_col] = pd.to_numeric(corr_data[clim_col], errors='coerce')
-                # Fill NaN values with the most common value or 0
-                if corr_data[clim_col].notna().any():
-                    corr_data[clim_col] = corr_data[clim_col].fillna(corr_data[clim_col].mode()[0] if len(corr_data[clim_col].mode()) > 0 else 0)
-                else:
-                    corr_data[clim_col] = corr_data[clim_col].fillna(0)
-        
-        # Remove columns with no variance (all same values)
-        variance = corr_data.var()
-        valid_cols = variance[variance != 0].index.tolist()
-        
-        # Keep at least the main columns if possible
-        if 'Temp_Ambiante' in valid_cols or len(valid_cols) >= 2:
-            corr_data = corr_data[valid_cols]
-        
-        # Add debug info after cleaning
-        with st.expander("🔍 Données après nettoyage", expanded=False):
-            st.write("**Colonnes retenues pour la corrélation:**", valid_cols)
-            st.write("**Échantillon des données:**")
-            st.dataframe(corr_data.head(10))
-            st.write("**Statistiques après nettoyage:**")
-            st.dataframe(corr_data.describe())
-        
-        # Calcul de la matrice de corrélation with additional handling
-        try:
-            corr_matrix = corr_data.corr(method='pearson', min_periods=10)
-            
-            # For any remaining NaN values in correlation matrix, try to calculate pairwise
-            for i, col1 in enumerate(corr_matrix.columns):
-                for j, col2 in enumerate(corr_matrix.columns):
-                    if pd.isna(corr_matrix.iloc[i, j]) and i != j:
-                        # Try direct correlation calculation
-                        mask = corr_data[[col1, col2]].notna().all(axis=1)
-                        if mask.sum() > 10:  # Need at least 10 valid pairs
-                            try:
-                                corr_val = corr_data.loc[mask, col1].corr(corr_data.loc[mask, col2])
-                                if not pd.isna(corr_val):
-                                    corr_matrix.iloc[i, j] = corr_val
-                                    corr_matrix.iloc[j, i] = corr_val
-                            except:
-                                pass
-        except Exception as e:
-            st.error(f"Erreur lors du calcul de corrélation: {str(e)}")
-            # Fallback to simple correlation
-            corr_matrix = corr_data.corr()
-        
-        # Clean any whitespace in index and columns
-        corr_matrix.index = corr_matrix.index.str.strip()
-        corr_matrix.columns = corr_matrix.columns.str.strip()
-        
-        # MODIFICATION: Force Temp_Ambiante to be first row and column
-        if 'Temp_Ambiante' in corr_matrix.index:
-            # Get the list of columns and reorder to put Temp_Ambiante first
-            cols = corr_matrix.columns.tolist()
-            # Remove Temp_Ambiante from its current position
-            cols.remove('Temp_Ambiante')
-            # Insert it at the beginning
-            cols.insert(0, 'Temp_Ambiante')
-            # Reorder both rows and columns
-            corr_matrix = corr_matrix.loc[cols, cols]
-        
-        # Fill any remaining NaN values in correlation matrix with 0 for display
-        corr_matrix_display = corr_matrix.fillna(0)
-        
-        # MODIFICATION: Create text matrix - only show values for Temp_Ambiante row
-        text_values = np.full(corr_matrix.shape, "", dtype=object)
-        
-        if 'Temp_Ambiante' in corr_matrix.index:
-            temp_index = corr_matrix.index.get_loc('Temp_Ambiante')
-            text_values[temp_index] = np.round(corr_matrix.values[temp_index], 2).astype(str)
-        
-        # Show NaN warnings if any
-        nan_pairs = []
-        for i in range(len(corr_matrix.columns)):
-            for j in range(i+1, len(corr_matrix.columns)):
-                if pd.isna(corr_matrix.iloc[i, j]):
-                    nan_pairs.append(f"{corr_matrix.columns[i]} - {corr_matrix.columns[j]}")
-        
-        if nan_pairs:
-            with st.expander("⚠️ Corrélations non calculables", expanded=False):
-                st.warning("Les paires suivantes n'ont pas pu être corrélées (données insuffisantes):")
-                for pair in nan_pairs:
-                    st.write(f"• {pair}")
-        
-        # Heatmap with masked annotations
-        fig = go.Figure(data=go.Heatmap(
-            z=corr_matrix_display.values,
-            x=corr_matrix_display.columns,
-            y=corr_matrix_display.index,
-            colorscale='RdBu_r',
-            zmid=0,
-            text=text_values,
-            texttemplate='%{text}',
-            textfont={"size": 12},
-            colorbar=dict(title="Corrélation"),
-            hoverongaps=False
-        ))
-           
-        fig.update_layout(
-            title="Matrice de corrélation - Température Ambiante en première ligne",
-            height=600,
-            width=700,
-            xaxis=dict(tickangle=-45, side='bottom'),
-            yaxis=dict(autorange='reversed')  # This ensures first row is at top
-        )
-       
-        st.plotly_chart(fig, use_container_width=True)
-       
-        # Display correlation values for Temp_Ambiante specifically
-        if 'Temp_Ambiante' in corr_matrix.index:
-            st.subheader("🌡️ Corrélations avec la Température Ambiante")
-            temp_corr_series = corr_matrix.loc['Temp_Ambiante'].drop('Temp_Ambiante')
-           
-            # Create a nice display table
-            temp_corr_df = pd.DataFrame({
-                'Variable': temp_corr_series.index,
-                'Corrélation': temp_corr_series.values,
-                'Force': ['Forte' if abs(x) > 0.7 else 'Modérée' if abs(x) > 0.3 else 'Faible' for x in temp_corr_series.values],
-                'Direction': ['Positive' if x > 0 else 'Négative' for x in temp_corr_series.values]
-            }).sort_values('Corrélation', key=abs, ascending=False)
-           
-            st.dataframe(
-                temp_corr_df.style.format({'Corrélation': '{:.3f}'}),
-                use_container_width=True
-            )
-        
-        # Interprétation automatique
-        st.subheader("🔍 Interprétation des corrélations")
-        
-        # Identifier les corrélations significatives
-        significant_corr = []
-        for i in range(len(corr_matrix.columns)):
-            for j in range(i+1, len(corr_matrix.columns)):
-                corr_value = corr_matrix.iloc[i, j]
-                if abs(corr_value) > 0.3:  # Seuil de significativité
-                    significant_corr.append({
-                        'Variable 1': corr_matrix.columns[i],
-                        'Variable 2': corr_matrix.columns[j],
-                        'Corrélation': corr_value
+        # Convert CLIM columns to numeric
+        for col in clim_status_columns:
+            if col in corr_data.columns:
+                if corr_data[col].dtype == 'object':
+                    corr_data[col] = corr_data[col].map({
+                        'ON': 1, 'on': 1, 'On': 1, '1': 1, 1: 1,
+                        'OFF': 0, 'off': 0, 'Off': 0, '0': 0, 0: 0
                     })
+                corr_data[col] = pd.to_numeric(corr_data[col], errors='coerce')
         
-        if significant_corr:
-            for corr in significant_corr:
-                strength = "forte" if abs(corr['Corrélation']) > 0.7 else "modérée"
-                direction = "positive" if corr['Corrélation'] > 0 else "négative"
-                
-                st.write(f"• **{corr['Variable 1']}** et **{corr['Variable 2']}** : "
-                        f"corrélation {strength} {direction} (r = {corr['Corrélation']:.2f})")
+        # Only keep rows where at least 50% of values are non-NaN
+        min_non_nan = len(available_vars) * 0.5
+        corr_data = corr_data.dropna(thresh=min_non_nan)
         
-        # Analyse spécifique de l'impact sur la température ambiante
-        if 'Temp_Ambiante' in available_vars:
-            st.subheader("🌡️ Facteurs influençant la température ambiante")
+        # Calculate correlation matrix with both methods
+        if len(corr_data) > 10:  # Need minimum data points
+            # Calculate both Pearson and Spearman
+            pearson_corr = corr_data.corr(method='pearson')
+            spearman_corr = corr_data.corr(method='spearman')
             
-            temp_corr = corr_matrix['Temp_Ambiante'].drop('Temp_Ambiante').sort_values(ascending=False)
+            # Use Spearman by default as it's more robust
+            corr_matrix = spearman_corr
+        else:
+            st.warning("⚠️ Données insuffisantes pour calculer les relations. Au moins 10 points de données sont nécessaires.")
+            corr_matrix = pd.DataFrame()
+        
+        if not corr_matrix.empty and 'Temp_Ambiante' in corr_matrix.columns:
             
-            fig = go.Figure()
-            fig.add_trace(go.Bar(
-                x=temp_corr.values,
-                y=temp_corr.index,
-                orientation='h',
-                marker_color=['red' if x > 0 else 'blue' for x in temp_corr.values]
-            ))
+            # Extract correlations with Temp_Ambiante
+            temp_correlations = corr_matrix['Temp_Ambiante'].drop('Temp_Ambiante', errors='ignore')
             
-            fig.update_layout(
-                title="Corrélation avec la température ambiante",
-                xaxis_title="Coefficient de corrélation",
-                height=400
-            )
+            # Function to interpret correlation strength
+            def interpret_correlation(value):
+                abs_val = abs(value)
+                if abs_val >= 0.8:
+                    return "très forte", "🔴"
+                elif abs_val >= 0.6:
+                    return "forte", "🟠"
+                elif abs_val >= 0.4:
+                    return "modérée", "🟡"
+                elif abs_val >= 0.2:
+                    return "faible", "🟢"
+                else:
+                    return "négligeable", "⚪"
             
-            st.plotly_chart(fig, use_container_width=True)
-            
-            # Résumé textuel
-            for var, corr in temp_corr.items():
-                if abs(corr) > 0.3:
-                    impact = "augmente" if corr > 0 else "diminue"
-                    st.write(f"• Quand **{var}** augmente, la température ambiante tend à **{impact}**")
-            
-            # Section spécifique pour les CLIMs individuelles
-            clim_correlations = [(var, corr) for var, corr in temp_corr.items() if 'CLIM' in var and 'Status' in var]
-            
-            if clim_correlations:
-                st.subheader("❄️ Corrélation Température - CLIMs Individuelles")
+            # Function to get relationship description
+            def get_relationship_description(var, corr_value):
+                strength, emoji = interpret_correlation(corr_value)
                 
-                # Créer un graphique pour les CLIMs uniquement
-                clim_names = [item[0] for item in clim_correlations]
-                clim_values = [item[1] for item in clim_correlations]
+                if pd.isna(corr_value):
+                    return f"{emoji} **{var}**: Données insuffisantes pour établir une relation"
                 
-                fig_clim = go.Figure()
-                fig_clim.add_trace(go.Bar(
-                    x=clim_names,
-                    y=clim_values,
-                    marker_color=['lightblue' if x < 0 else 'lightcoral' for x in clim_values],
-                    text=[f'{x:.3f}' for x in clim_values],
-                    textposition='auto',
-                ))
+                if abs(corr_value) < 0.2:
+                    return f"{emoji} **{var}**: Aucune relation significative détectée"
                 
-                fig_clim.update_layout(
-                    title="Impact de chaque CLIM sur la température ambiante",
-                    xaxis_title="CLIM",
-                    yaxis_title="Coefficient de corrélation",
-                    height=400,
-                    showlegend=False
-                )
+                direction = "augmente" if corr_value > 0 else "diminue"
+                opposite = "augmente" if corr_value > 0 else "diminue"
                 
-                # Ajouter une ligne de référence à 0
-                fig_clim.add_hline(y=0, line_dash="dash", line_color="gray")
+                # Custom descriptions for each variable
+                descriptions = {
+                    'Temp_Exterieure': {
+                        'positive': f"Quand la température extérieure augmente, la température ambiante tend à augmenter également (relation {strength})",
+                        'negative': f"Quand la température extérieure augmente, la température ambiante tend à diminuer (relation {strength} - situation inhabituelle)"
+                    },
+                    'Puissance_IT': {
+                        'positive': f"Quand la charge IT augmente, la température ambiante augmente (relation {strength})",
+                        'negative': f"Quand la charge IT augmente, la température ambiante diminue (relation {strength} - situation inhabituelle)"
+                    },
+                    'Porte_Status': {
+                        'positive': f"Les ouvertures de porte ont tendance à faire augmenter la température ambiante (relation {strength})",
+                        'negative': f"Les ouvertures de porte ont tendance à faire baisser la température ambiante (relation {strength})"
+                    }
+                }
                 
-                st.plotly_chart(fig_clim, use_container_width=True)
-                
-                # Analyse détaillée
-                st.write("**Interprétation :**")
-                for clim_name, corr_value in clim_correlations:
-                    if corr_value < -0.1:
-                        st.write(f"• **{clim_name}** : Corrélation négative ({corr_value:.3f}) - Quand cette CLIM est active, la température diminue")
-                    elif corr_value > 0.1:
-                        st.write(f"• **{clim_name}** : Corrélation positive ({corr_value:.3f}) - Effet inverse attendu, vérifier le fonctionnement")
+                # For CLIM units
+                if 'CLIM' in var and 'Status' in var:
+                    if corr_value < 0:
+                        return f"L'activation de {var.replace('_Status', '')} aide à réduire la température (relation {strength})"
                     else:
-                        st.write(f"• **{clim_name}** : Corrélation faible ({corr_value:.3f}) - Impact minimal sur la température")
+                        return f"L'activation de {var.replace('_Status', '')} est associée à une hausse de température (relation {strength} - vérifier l'efficacité)"
                 
-                # Identifier la CLIM la plus efficace
-                if clim_correlations:
-                    most_effective = min(clim_correlations, key=lambda x: x[1])
-                    st.success(f"🏆 **{most_effective[0]}** est la CLIM la plus efficace avec une corrélation de {most_effective[1]:.3f}")
+                # Get appropriate description
+                if var in descriptions:
+                    desc_key = 'positive' if corr_value > 0 else 'negative'
+                    base_desc = descriptions[var][desc_key]
+                else:
+                    base_desc = f"Relation {strength} {'positive' if corr_value > 0 else 'négative'} avec {var}"
+                
+                return f"{emoji} **{var}**: {base_desc}"
+            
+            # Main analysis section
+            st.markdown("## 📊 Comprendre les Relations avec la Température Ambiante")
+            st.markdown("""
+            Cette analyse identifie les facteurs qui influencent la température ambiante dans votre centre de données.
+            Les relations sont classées par ordre d'importance pour faciliter la prise de décision.
+            """)
+            
+            # Sort correlations by absolute value
+            sorted_correlations = temp_correlations.abs().sort_values(ascending=False)
+            
+            # Key drivers section
+            st.markdown("### 🎯 Facteurs Principaux Affectant la Température")
+            
+            # Identify top drivers
+            top_drivers = []
+            for var in sorted_correlations.index:
+                corr_val = temp_correlations[var]
+                if abs(corr_val) >= 0.3:  # Only significant correlations
+                    top_drivers.append((var, corr_val))
+            
+            if top_drivers:
+                st.markdown("**Facteurs ayant un impact significatif (classés par importance):**")
+                
+                for i, (var, corr_val) in enumerate(top_drivers, 1):
+                    strength, emoji = interpret_correlation(corr_val)
+                    
+                    # Create readable variable names
+                    var_display = {
+                        'Temp_Exterieure': 'Température Extérieure',
+                        'Puissance_IT': 'Charge IT',
+                        'Porte_Status': 'État de la Porte',
+                        'CLIM_A_Status': 'Climatisation A',
+                        'CLIM_B_Status': 'Climatisation B',
+                        'CLIM_C_Status': 'Climatisation C',
+                        'CLIM_D_Status': 'Climatisation D'
+                    }.get(var, var)
+                    
+                    impact_desc = get_relationship_description(var, corr_val)
+                    st.markdown(f"{i}. {impact_desc}")
+            else:
+                st.info("Aucun facteur n'a d'impact significatif sur la température pendant cette période.")
         
-        # Régression linéaire entre température extérieure et intérieure
-        if 'Temp_Exterieure' in available_vars and 'Temp_Ambiante' in available_vars:
-            st.subheader("📊 Régression Linéaire : Température Extérieure vs Intérieure")
+            # Detailed insights section
+            st.markdown("### 💡 Insights Détaillés et Recommandations")
             
-            # Préparer les données pour la régression
-            temp_data = merged_data[['Temp_Exterieure', 'Temp_Ambiante']].dropna()
+            # Create three columns for different categories
+            col1, col2, col3 = st.columns(3)
             
-            if len(temp_data) > 10:  # Minimum de points pour une régression significative
-                from sklearn.linear_model import LinearRegression
-                from sklearn.metrics import r2_score
-                import numpy as np
+            with col1:
+                st.markdown("#### 🌡️ Facteurs Environnementaux")
+                if 'Temp_Exterieure' in temp_correlations:
+                    ext_corr = temp_correlations['Temp_Exterieure']
+                    if abs(ext_corr) > 0.5:
+                        st.error(f"Impact élevé de la température extérieure (corrélation: {ext_corr:.2f})")
+                        st.markdown("**Recommandations:**")
+                        st.markdown("- Améliorer l'isolation thermique")
+                        st.markdown("- Vérifier l'étanchéité du bâtiment")
+                        st.markdown("- Installer des pare-soleil si nécessaire")
+                    elif abs(ext_corr) > 0.3:
+                        st.warning(f"Impact modéré de la température extérieure (corrélation: {ext_corr:.2f})")
+                        st.markdown("**Recommandations:**")
+                        st.markdown("- Surveiller lors des pics de chaleur")
+                        st.markdown("- Planifier la maintenance préventive")
+                    else:
+                        st.success(f"Bonne isolation thermique (corrélation: {ext_corr:.2f})")
+                        st.markdown("- L'isolation fonctionne bien")
+                        st.markdown("- Maintenir les bonnes pratiques")
+            
+            with col2:
+                st.markdown("#### ❄️ Système de Refroidissement")
+                clim_effectiveness = []
+                for col in clim_status_columns:
+                    if col in temp_correlations:
+                        clim_effectiveness.append((col, temp_correlations[col]))
                 
-                X = temp_data['Temp_Exterieure'].values.reshape(-1, 1)
-                y = temp_data['Temp_Ambiante'].values
+                if clim_effectiveness:
+                    effective_units = [unit for unit, corr in clim_effectiveness if corr < -0.2]
+                    ineffective_units = [unit for unit, corr in clim_effectiveness if corr >= 0]
+                    
+                    if effective_units:
+                        st.success(f"{len(effective_units)} unité(s) CLIM fonctionnent correctement")
+                        for unit in effective_units:
+                            unit_name = unit.replace('_Status', '')
+                            st.markdown(f"- ✅ {unit_name} réduit efficacement la température")
+                    
+                    if ineffective_units:
+                        st.error(f"{len(ineffective_units)} unité(s) CLIM nécessitent attention")
+                        for unit in ineffective_units:
+                            unit_name = unit.replace('_Status', '')
+                            st.markdown(f"- ⚠️ {unit_name} pourrait nécessiter maintenance")
+                        st.markdown("**Action requise:** Vérifier l'efficacité de ces unités")
+                else:
+                    st.info("Données CLIM non disponibles")
+            
+            with col3:
+                st.markdown("#### 💻 Charge IT et Accès")
+                if 'Puissance_IT' in temp_correlations:
+                    it_corr = temp_correlations['Puissance_IT']
+                    if abs(it_corr) > 0.5:
+                        st.warning(f"Forte influence de la charge IT (corrélation: {it_corr:.2f})")
+                        st.markdown("**Recommandations:**")
+                        st.markdown("- Optimiser la distribution de charge")
+                        st.markdown("- Considérer l'ajout de capacité de refroidissement")
+                    else:
+                        st.success(f"Impact IT gérable (corrélation: {it_corr:.2f})")
                 
-                # Calculer la régression linéaire
-                reg = LinearRegression()
-                reg.fit(X, y)
-                y_pred = reg.predict(X)
+                if 'Porte_Status' in temp_correlations:
+                    door_corr = temp_correlations['Porte_Status']
+                    if abs(door_corr) > 0.3:
+                        st.warning(f"Impact des ouvertures de porte (corrélation: {door_corr:.2f})")
+                        st.markdown("**Recommandations:**")
+                        st.markdown("- Former le personnel aux bonnes pratiques")
+                        st.markdown("- Installer des alertes pour portes ouvertes")
+                    else:
+                        st.success("Impact minimal des portes")
+            
+            # Summary and action plan
+            st.markdown("### 📋 Plan d'Action Prioritaire")
+            
+            # Generate priority actions based on correlations
+            priority_actions = []
+            
+            # Check external temperature
+            if 'Temp_Exterieure' in temp_correlations and abs(temp_correlations['Temp_Exterieure']) > 0.5:
+                priority_actions.append(("Haute", "🔴", "Améliorer l'isolation thermique du bâtiment", 
+                                        "La température extérieure a un impact trop important"))
+            
+            # Check CLIM effectiveness
+            ineffective_clims = sum(1 for col in clim_status_columns 
+                                   if col in temp_correlations and temp_correlations[col] >= 0)
+            if ineffective_clims > 0:
+                priority_actions.append(("Haute", "🔴", f"Maintenance urgente de {ineffective_clims} unité(s) CLIM",
+                                        "Certaines unités ne refroidissent pas efficacement"))
+            
+            # Check IT load
+            if 'Puissance_IT' in temp_correlations and temp_correlations['Puissance_IT'] > 0.6:
+                priority_actions.append(("Moyenne", "🟡", "Optimiser la répartition de la charge IT",
+                                        "La charge IT contribue significativement à la chaleur"))
+            
+            # Check door impact
+            if 'Porte_Status' in temp_correlations and abs(temp_correlations['Porte_Status']) > 0.4:
+                priority_actions.append(("Moyenne", "🟡", "Réviser les procédures d'accès",
+                                        "Les ouvertures de porte affectent la température"))
+            
+            if priority_actions:
+                st.markdown("**Actions recommandées par ordre de priorité:**")
                 
-                # Coefficient de détermination R²
-                r2 = r2_score(y, y_pred)
+                # Sort by priority
+                priority_order = {"Haute": 1, "Moyenne": 2, "Basse": 3}
+                priority_actions.sort(key=lambda x: priority_order[x[0]])
                 
-                # Créer le graphique
-                fig = go.Figure()
+                for priority, emoji, action, reason in priority_actions:
+                    st.markdown(f"{emoji} **Priorité {priority}:** {action}")
+                    st.markdown(f"   *Raison: {reason}*")
+            else:
+                st.success("✅ Aucune action urgente requise. Le système fonctionne dans des paramètres acceptables.")
+            
+            # Technical details expander for those who want more info
+            with st.expander("📊 Détails Techniques (pour les experts)", expanded=False):
+                st.markdown("#### Valeurs de Corrélation")
                 
-                # Points de données réels
-                fig.add_trace(go.Scatter(
-                    x=temp_data['Temp_Exterieure'],
-                    y=temp_data['Temp_Ambiante'],
-                    mode='markers',
-                    name='Données réelles',
-                    marker=dict(
-                        color='lightblue',
-                        size=6,
-                        opacity=0.6
-                    ),
-                    hovertemplate='Temp. Ext: %{x:.1f}°C<br>Temp. Int: %{y:.1f}°C<extra></extra>'
-                ))
+                # Create a clean dataframe for display
+                tech_df = pd.DataFrame({
+                    'Variable': temp_correlations.index,
+                    'Corrélation': temp_correlations.values,
+                    'Interprétation': [interpret_correlation(x)[0] for x in temp_correlations.values],
+                    'Impact': ['Positif' if x > 0 else 'Négatif' if x < 0 else 'Neutre' for x in temp_correlations.values]
+                })
+                tech_df = tech_df.sort_values('Corrélation', key=abs, ascending=False)
                 
-                # Ligne de régression
-                fig.add_trace(go.Scatter(
-                    x=temp_data['Temp_Exterieure'],
-                    y=y_pred,
-                    mode='lines',
-                    name=f'Régression linéaire (R² = {r2:.3f})',
-                    line=dict(color='red', width=2),
-                    hovertemplate='Prédiction: %{y:.1f}°C<extra></extra>'
-                ))
-                
-                fig.update_layout(
-                    title=f"Relation Température Extérieure → Intérieure<br><sub>Équation: Temp_Int = {reg.intercept_:.2f} + {reg.coef_[0]:.3f} × Temp_Ext</sub>",
-                    xaxis_title="Température Extérieure (°C)",
-                    yaxis_title="Température Ambiante (°C)",
-                    height=500,
-                    showlegend=True,
-                    hovermode='closest'
+                st.dataframe(
+                    tech_df.style.format({'Corrélation': '{:.3f}'})
+                    .background_gradient(subset=['Corrélation'], cmap='RdBu_r', vmin=-1, vmax=1),
+                    use_container_width=True
                 )
                 
-                st.plotly_chart(fig, use_container_width=True)
-                
-                # Interprétation des résultats
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.metric("Coefficient R²", f"{r2:.3f}")
-                with col2:
-                    st.metric("Pente", f"{reg.coef_[0]:.3f}")
-                with col3:
-                    st.metric("Ordonnée à l'origine", f"{reg.intercept_:.2f}°C")
-                
-                # Commentaire explicatif
-                st.markdown("**💡 Analyse de la régression :**")
-                
-                if r2 > 0.7:
-                    quality = "**forte**"
-                    color = "🟢"
-                elif r2 > 0.4:
-                    quality = "**modérée**"
-                    color = "🟡"
-                else:
-                    quality = "**faible**"
-                    color = "🔴"
-                
-                st.markdown(f"""
-                {color} **Qualité de la relation :** {quality} (R² = {r2:.3f})
-                
-                📈 **Interprétation :**
-                - **Pente = {reg.coef_[0]:.3f}** : Pour chaque degré d'augmentation de la température extérieure, 
-                  la température intérieure augmente en moyenne de {reg.coef_[0]:.3f}°C
-                - **Ordonnée = {reg.intercept_:.2f}°C** : Température intérieure théorique quand il fait 0°C dehors
-                
-                🏢 **Implications pratiques :**
+                st.markdown("""
+                **Guide d'interprétation:**
+                - **Corrélation positive:** Les deux variables évoluent dans le même sens
+                - **Corrélation négative:** Les variables évoluent en sens opposé
+                - **Valeur absolue:** Indique la force de la relation (0 = aucune, 1 = parfaite)
+                - **Méthode utilisée:** Corrélation de Spearman (robuste aux valeurs extrêmes)
                 """)
-                
-                if reg.coef_[0] > 0.8:
-                    st.warning("⚠️ **Isolation insuffisante** : La température intérieure suit de près la température extérieure. "
-                             "Le système de climatisation doit compenser fortement les variations externes.")
-                elif reg.coef_[0] > 0.5:
-                    st.info("ℹ️ **Isolation correcte** : Il existe une influence modérée de la température extérieure. "
-                           "Le système de climatisation maintient relativement bien la température.")
-                else:
-                    st.success("✅ **Excellente isolation** : La température intérieure est bien découplée de l'extérieur. "
-                             "Le système de climatisation est efficace.")
-                
+        
+        else:
+            if corr_matrix.empty:
+                st.warning("⚠️ Impossible de calculer les relations entre variables. Vérifiez la disponibilité des données.")
             else:
-                st.warning("Pas assez de données simultanées (température ext./int.) pour effectuer une régression linéaire.")
+                st.warning("⚠️ La variable 'Temp_Ambiante' n'est pas disponible dans les données.")
+    
     else:
-        st.warning("Pas assez de variables numériques disponibles pour calculer les corrélations.")
+        st.warning("⚠️ Pas assez de variables disponibles pour l'analyse des relations")
+
 # 8. RAPPORTS
 with tab8:
     st.header("📋 Génération de rapports")
+    st.info(f"📅 Période sélectionnée: {start_date.strftime('%Y-%m-%d %H:%M')} - {end_date.strftime('%Y-%m-%d %H:%M')}")
     
     report_type = st.selectbox(
         "Type de rapport",
@@ -2799,10 +2867,10 @@ with tab8:
             💰 **Impact concret :** Si votre PUE passe de 2.0 à 1.5, vous économisez 25% sur votre facture d'électricité totale!
             """)
         
-        if all(col in merged_data.columns for col in ['Puissance_IT', 'Puissance_CLIM', 'Puissance_Generale']):
+        if all(col in filtered_merged_data.columns for col in ['Puissance_IT', 'Puissance_CLIM', 'Puissance_Generale']):
             # Calculs d'efficacité
-            pue = merged_data['Puissance_Generale'] / merged_data['Puissance_IT']
-            cooling_efficiency = merged_data['Puissance_CLIM'] / merged_data['Puissance_IT']
+            pue = filtered_merged_data['Puissance_Generale'] / filtered_merged_data['Puissance_IT']
+            cooling_efficiency = filtered_merged_data['Puissance_CLIM'] / filtered_merged_data['Puissance_IT']
             
             col1, col2, col3 = st.columns(3)
             with col1:
@@ -2810,11 +2878,11 @@ with tab8:
             with col2:
                 st.metric("Efficacité CLIM", f"{cooling_efficiency.mean():.2f}")
             with col3:
-                energy_waste = (merged_data['Puissance_Generale'] - merged_data['Puissance_IT']).sum()
+                energy_waste = (filtered_merged_data['Puissance_Generale'] - filtered_merged_data['Puissance_IT']).sum()
                 st.metric("Énergie non-IT totale", f"{energy_waste:.0f} kWh")
             
             # Graphique d'évolution du PUE
-            daily_pue = merged_data.copy()
+            daily_pue = filtered_merged_data.copy()
             daily_pue['Date'] = daily_pue['Timestamp'].dt.date
             daily_pue['PUE'] = daily_pue['Puissance_Generale'] / daily_pue['Puissance_IT']
             daily_avg_pue = daily_pue.groupby('Date')['PUE'].mean().reset_index()
@@ -2883,7 +2951,7 @@ with tab8:
                 """)
             
             # Analyse des périodes de surconsommation
-            high_consumption = merged_data[pue > pue.quantile(0.9)].copy()
+            high_consumption = filtered_merged_data[pue > pue.quantile(0.9)].copy()
             if not high_consumption.empty:
                 high_consumption['Hour'] = high_consumption['Timestamp'].dt.hour
                 peak_hours = high_consumption['Hour'].value_counts().head(3)
@@ -2895,6 +2963,7 @@ with tab8:
 # 9. SIMULATION DE COÛTS
 with tab9:
     st.header("💰 Simulation et Analyse des Coûts Énergétiques")
+    st.info(f"📅 Période sélectionnée: {start_date.strftime('%Y-%m-%d %H:%M')} - {end_date.strftime('%Y-%m-%d %H:%M')}")
     
     # Explication
     st.info("""
@@ -2905,7 +2974,7 @@ with tab9:
     - Analyser l'impact financier du PUE
     """)
     
-    if all(col in merged_data.columns for col in ['Puissance_IT', 'Puissance_CLIM', 'Puissance_Generale']):
+    if all(col in filtered_merged_data.columns for col in ['Puissance_IT', 'Puissance_CLIM', 'Puissance_Generale']):
         # Input pour le tarif électrique
         col1, col2, col3 = st.columns([1, 1, 2])
         with col1:
@@ -2930,12 +2999,12 @@ with tab9:
         st.subheader("📊 Analyse des Coûts Actuels")
         
         # Calcul des consommations
-        time_range = (merged_data['Timestamp'].max() - merged_data['Timestamp'].min()).total_seconds() / 3600
+        time_range = (filtered_merged_data['Timestamp'].max() - filtered_merged_data['Timestamp'].min()).total_seconds() / 3600
         
         # Consommations moyennes
-        avg_it_power = merged_data['Puissance_IT'].mean()
-        avg_clim_power = merged_data['Puissance_CLIM'].mean()
-        avg_total_power = merged_data['Puissance_Generale'].mean()
+        avg_it_power = filtered_merged_data['Puissance_IT'].mean()
+        avg_clim_power = filtered_merged_data['Puissance_CLIM'].mean()
+        avg_total_power = filtered_merged_data['Puissance_Generale'].mean()
         avg_pue = avg_total_power / avg_it_power if avg_it_power > 0 else 0
         
         # Coûts horaires, journaliers, mensuels et annuels

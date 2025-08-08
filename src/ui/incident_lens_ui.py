@@ -27,8 +27,14 @@ except ImportError:
     from src.incident_lens.recommender import RecommendationEngine
 
 
-def render_incident_lens_interface():
-    """Main interface for Incident Lens root cause analysis"""
+def render_incident_lens_interface(data=None, start_date=None, end_date=None):
+    """Main interface for Incident Lens root cause analysis
+    
+    Args:
+        data: Pre-filtered DataFrame (optional)
+        start_date: Start date from unified selector (optional)
+        end_date: End date from unified selector (optional)
+    """
     st.header("🔍 Incident Lens - Analyse des Causes Racines")
     st.markdown("""
     **Objectif**: Identifier automatiquement les causes des anomalies de température avec des scores de confiance.
