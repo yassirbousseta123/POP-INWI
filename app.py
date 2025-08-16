@@ -5,12 +5,94 @@ import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
+from pathlib import Path
 import seaborn as sns
 import matplotlib.pyplot as plt
 from scipy import stats
 from data_loader import DataCleaner
 import warnings
 warnings.filterwarnings('ignore')
+
+# Initialiser le DataCleaner
+data_cleaner = DataCleaner()
+
+def get_region_pop_selection():
+    """Gère la sélection de la région et du POP dans la barre latérale avec indicateurs de disponibilité des données"""
+    st.sidebar.title("Sélection du Site")
+    
+    # Sélection de la région
+    regions = data_cleaner.get_regions()
+    if not regions:
+        st.error("Aucune région trouvée dans le dossier de données")
+        st.stop()
+        
+    selected_region = st.sidebar.selectbox(
+        "Sélectionnez une région",
+        regions
+    )
+    
+    # Sélection du POP
+    pops = data_cleaner.get_pops(selected_region)
+    if not pops:
+        st.error(f"Aucun POP trouvé dans la région {selected_region}")
+        st.stop()
+    
+    # Vérifier la disponibilité des données pour chaque POP
+    def check_pop_data_availability(region, pop):
+        """Vérifie si un POP a les fichiers de données requis"""
+        # Use pattern matching to handle Unicode encoding differences
+        required_patterns = [
+            (['temp', 'amb'], 'Température Ambiante'),
+            (['temp', 'ext'], 'Température Extérieure'),
+            (['active', 'clim'], 'P.Active CLIM'),
+            (['active', 'gén'], 'P.Active Générale')  # Use 'gén' to match 'générale'
+        ]
+        try:
+            pop_path = data_cleaner.get_pop_path(region, pop)
+            if not pop_path.exists():
+                return False
+            
+            existing_files = [f.name.lower() for f in pop_path.iterdir() if f.is_file()]
+            
+            available_count = 0
+            for keywords, description in required_patterns:
+                # Check if any file matches all keywords for this pattern
+                pattern_found = any(
+                    all(keyword in file for keyword in keywords) 
+                    for file in existing_files
+                )
+                if pattern_found:
+                    available_count += 1
+                    
+            return available_count >= 3  # Au moins 3 des 4 types de fichiers requis
+        except:
+            return False
+    
+    # Créer une liste des POPs avec indicateurs de disponibilité
+    pop_options = []
+    for pop in pops:
+        has_data = check_pop_data_availability(selected_region, pop)
+        if has_data:
+            pop_options.append(f"✅ {pop} (données disponibles)")
+        else:
+            pop_options.append(f"❌ {pop} (données manquantes)")
+    
+    # Si aucun POP n'a de données, afficher une alerte
+    available_pops = [pop for pop in pops if check_pop_data_availability(selected_region, pop)]
+    if not available_pops:
+        st.sidebar.warning(f"⚠️ Aucun POP dans {selected_region} n'a de données complètes")
+        st.sidebar.info("💡 Essayez la région Marrakech (BGU-ONE, CHC-ONE, ESS-MCO)")
+    
+    selected_pop_display = st.sidebar.selectbox(
+        "Sélectionnez un POP",
+        pop_options,
+        help="✅ = Données disponibles, ❌ = Données manquantes"
+    )
+    
+    # Extraire le nom réel du POP (sans l'indicateur)
+    selected_pop = selected_pop_display.split(' ', 1)[1].split(' (')[0]
+    
+    return selected_region, selected_pop
 
 # Import Unified Period Selector
 from src.ui.period_selector import period_selector
@@ -25,13 +107,38 @@ except ImportError as e:
 
 # Configuration de la page
 st.set_page_config(
-    page_title="BGU-ONE Centre de Données - Tableau de Bord",
+    page_title="Centre de Données INWI - Tableau de Bord",
     page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
+# Obtenir la région et le POP sélectionnés
+selected_region, selected_pop = get_region_pop_selection()
+
+# Charger les données pour le POP sélectionné
+data_cleaner = DataCleaner()
+cleaned_data = data_cleaner.load_all_data(selected_region, selected_pop)
+
+if not cleaned_data:
+    st.error("Aucune donnée n'a été trouvée pour ce POP. Vérifiez que les fichiers CSV sont présents dans le dossier.")
+    st.stop()
+
+# Fusionner toutes les données
+merged_data = data_cleaner.merge_all_data(cleaned_data)
+
+if merged_data.empty:
+    st.error("Erreur lors de la fusion des données. Vérifiez le format des fichiers CSV.")
+    st.stop()
+
 # Style CSS personnalisé
+st.markdown(f"""
+    <div style="text-align: center;">
+        <h1>Centre de données INWI - {selected_pop}</h1>
+        <h3>Région : {selected_region}</h3>
+    </div>
+""", unsafe_allow_html=True)
+
 st.markdown("""
 <style>
     .main {
@@ -61,7 +168,7 @@ st.markdown("""
 # Titre principal avec logo INWI
 col_title, col_spacer, col_logo = st.columns([5, 0.5, 1])
 with col_title:
-    st.markdown("<h1 style='margin-top: 0; padding-top: 20px;'>🏢 BGU-ONE Centre de Données - Tableau de Bord de Surveillance</h1>", unsafe_allow_html=True)
+    st.markdown("<h1 style='margin-top: 0; padding-top: 20px;'>🏢 Centre de Données - Tableau de Bord de Surveillance</h1>", unsafe_allow_html=True)
 with col_spacer:
     st.empty()
 with col_logo:
@@ -72,10 +179,14 @@ st.markdown("---")
 
 # Initialisation du cache
 @st.cache_data
-def load_data():
-    """Charge et nettoie toutes les données"""
+def load_data(region, pop):
+    """Charge et nettoie toutes les données pour un POP spécifique"""
     cleaner = DataCleaner()
-    cleaned_data = cleaner.load_all_data()
+    cleaned_data = cleaner.load_all_data(region, pop)
+    if not cleaned_data:
+        st.error(f"Aucune donnée trouvée pour {pop} dans la région {region}")
+        return None, pd.DataFrame()
+        
     merged_data = cleaner.merge_all_data(cleaned_data)
     return cleaned_data, merged_data
 
@@ -90,9 +201,72 @@ if 'unified_period' not in st.session_state:
         'custom_range': None
     }
 
+# Vérification du dossier data
+data_path = Path('data')
+if not data_path.exists():
+    st.error(f"❌ Le dossier 'data' n'existe pas dans : {Path.cwd()}")
+    st.info("Assurez-vous que le dossier 'data' est présent dans le même répertoire que app.py")
+    st.stop()
+
+# Vérification du dossier de la région
+region_path = data_path / selected_region
+if not region_path.exists():
+    st.error(f"❌ Le dossier de la région '{selected_region}' n'existe pas dans : {data_path}")
+    st.info(f"Structure attendue : {data_path}/{selected_region}/{selected_pop}/")
+    st.stop()
+
+# Vérification du dossier du POP
+pop_path = region_path / selected_pop
+if not pop_path.exists():
+    st.error(f"❌ Le dossier du POP '{selected_pop}' n'existe pas dans : {region_path}")
+    st.info(f"Structure attendue : {region_path}/{selected_pop}/")
+    st.stop()
+
 # Chargement des données
-with st.spinner("Chargement des données..."):
-    cleaned_data, merged_data = load_data()
+with st.spinner(f"Chargement des données pour {selected_pop}..."):
+    cleaned_data, merged_data = load_data(selected_region, selected_pop)
+
+if merged_data.empty:
+    st.error(f"❌ **Aucune donnée disponible pour {selected_pop} dans la région {selected_region}**")
+    
+    # Suggérer des POPs avec données
+    st.markdown("### 💡 **Essayez ces POPs avec données complètes:**")
+    
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.success("**Marrakech**")
+        st.write("✅ BGU-ONE")
+        st.write("✅ CHC-ONE") 
+        st.write("✅ ESS-MCO")
+    
+    with col2:
+        st.info("**Disponibilité**")
+        st.write("🌡️ Températures")
+        st.write("⚡ Puissances")
+        st.write("❄️ États CLIM")
+    
+    with col3:
+        st.info("**Analyses possibles**")
+        st.write("🔗 Corrélations")
+        st.write("📊 Visualisations")
+        st.write("🔍 Incident Lens")
+    
+    st.markdown("---")
+    with st.expander("🔍 **Détails techniques - Fichiers requis**"):
+        st.code("""
+    Température Ambiante.csv
+    Température Extérieure.csv
+    P.Active CLIM.csv
+    P.Active Générale.csv
+    Etat CLIM A.csv
+    Etat CLIM B.csv
+    Etat CLIM C.csv
+    Etat CLIM D.csv
+    Etat Porte.csv
+        """)
+    
+    st.info("👈 **Changez de région/POP dans la barre latérale pour accéder aux données**")
+    st.stop()
 
 # Unified Period Selector in Sidebar
 start_date, end_date = period_selector.render_mini_selector()
@@ -853,34 +1027,52 @@ with tab2:
         col1, col2, col3 = st.columns(3)
         
         with col1:
-            if 'Temp_Ambiante' in hourly_data.columns:
-                peak_hour_amb = hourly_avg_ambiante.loc[hourly_avg_ambiante['mean'].idxmax(), 'Heure']
-                peak_temp_amb = hourly_avg_ambiante['mean'].max()
-                st.metric(
-                    "🌡️ Pic Temp Ambiante",
-                    f"{peak_temp_amb:.1f}°C",
-                    f"à {int(peak_hour_amb)}h"
-                )
+            if 'Temp_Ambiante' in hourly_data.columns and not hourly_avg_ambiante['mean'].isna().all():
+                peak_idx_amb = hourly_avg_ambiante['mean'].idxmax()
+                if pd.notna(peak_idx_amb):
+                    peak_hour_amb = hourly_avg_ambiante.loc[peak_idx_amb, 'Heure']
+                    peak_temp_amb = hourly_avg_ambiante['mean'].max()
+                    st.metric(
+                        "🌡️ Pic Temp Ambiante",
+                        f"{peak_temp_amb:.1f}°C",
+                        f"à {int(peak_hour_amb)}h"
+                    )
+                else:
+                    st.metric("🌡️ Pic Temp Ambiante", "N/A", "Données insuffisantes")
+            elif 'Temp_Ambiante' in hourly_data.columns:
+                st.metric("🌡️ Pic Temp Ambiante", "N/A", "Données insuffisantes")
         
         with col2:
-            if 'Puissance_IT' in hourly_data.columns:
-                peak_hour_it = hourly_avg_it.loc[hourly_avg_it['mean'].idxmax(), 'Heure']
-                peak_power_it = hourly_avg_it['mean'].max()
-                st.metric(
-                    "💻 Pic Puissance IT",
-                    f"{peak_power_it:.1f} kW",
-                    f"à {int(peak_hour_it)}h"
-                )
+            if 'Puissance_IT' in hourly_data.columns and not hourly_avg_it['mean'].isna().all():
+                peak_idx_it = hourly_avg_it['mean'].idxmax()
+                if pd.notna(peak_idx_it):
+                    peak_hour_it = hourly_avg_it.loc[peak_idx_it, 'Heure']
+                    peak_power_it = hourly_avg_it['mean'].max()
+                    st.metric(
+                        "💻 Pic Puissance IT",
+                        f"{peak_power_it:.1f} kW",
+                        f"à {int(peak_hour_it)}h"
+                    )
+                else:
+                    st.metric("💻 Pic Puissance IT", "N/A", "Données insuffisantes")
+            elif 'Puissance_IT' in hourly_data.columns:
+                st.metric("💻 Pic Puissance IT", "N/A", "Données insuffisantes")
         
         with col3:
-            if 'Temp_Exterieure' in hourly_data.columns:
-                peak_hour_ext = hourly_avg_ext.loc[hourly_avg_ext['mean'].idxmax(), 'Heure']
-                peak_temp_ext = hourly_avg_ext['mean'].max()
-                st.metric(
-                    "🌤️ Pic Temp Extérieure",
-                    f"{peak_temp_ext:.1f}°C",
-                    f"à {int(peak_hour_ext)}h"
-                )
+            if 'Temp_Exterieure' in hourly_data.columns and not hourly_avg_ext['mean'].isna().all():
+                peak_idx_ext = hourly_avg_ext['mean'].idxmax()
+                if pd.notna(peak_idx_ext):
+                    peak_hour_ext = hourly_avg_ext.loc[peak_idx_ext, 'Heure']
+                    peak_temp_ext = hourly_avg_ext['mean'].max()
+                    st.metric(
+                        "🌤️ Pic Temp Extérieure",
+                        f"{peak_temp_ext:.1f}°C",
+                        f"à {int(peak_hour_ext)}h"
+                    )
+                else:
+                    st.metric("🌤️ Pic Temp Extérieure", "N/A", "Données insuffisantes")
+            elif 'Temp_Exterieure' in hourly_data.columns:
+                st.metric("🌤️ Pic Temp Extérieure", "N/A", "Données insuffisantes")
 
 # 3. ANALYSES EDA
 with tab3:
@@ -2515,9 +2707,10 @@ with tab5:
     else:
         st.warning("Données de porte ou de température manquantes pour l'analyse.")
 
-# 6. ANALYSE PORTE
+# 6. INCIDENT LENS
 with tab6:
     st.info(f"📅 Période sélectionnée: {start_date.strftime('%Y-%m-%d %H:%M')} - {end_date.strftime('%Y-%m-%d %H:%M')}")
+    
     if render_incident_lens_interface:
         # Pass filtered data to Incident Lens
         render_incident_lens_interface(data=filtered_merged_data, start_date=start_date, end_date=end_date)
@@ -2530,141 +2723,158 @@ with tab7:
     st.header("🔗 Analyse des Relations entre Variables")
     st.info(f"📅 Période sélectionnée: {start_date.strftime('%Y-%m-%d %H:%M')} - {end_date.strftime('%Y-%m-%d %H:%M')}")
     
-    # Sélection des variables pour la corrélation
-    numeric_vars = ['Temp_Ambiante', 'Temp_Exterieure', 'Puissance_IT', 'Porte_Status']
+    # Créer des sous-onglets pour l'analyse single-POP et multi-POP
+    corr_tab1, corr_tab2 = st.tabs(["📊 Analyse POP Actuel", "🌐 Comparaison Multi-POPs"])
     
-    # Ajouter les colonnes CLIM individuelles si elles existent
-    clim_status_columns = [col for col in filtered_merged_data.columns if 'CLIM' in col and 'Status' in col]
-    numeric_vars.extend(clim_status_columns)
-    
-    available_vars = [var for var in numeric_vars if var in filtered_merged_data.columns]
-    
-    if len(available_vars) >= 2:
-        # Create a copy for correlation calculation to avoid modifying original data
-        corr_data = filtered_merged_data[available_vars].copy()
+    # Tab 1: Analyse du POP actuel (code existant)
+    with corr_tab1:
+        # Sélection des variables pour la corrélation
+        numeric_vars = ['Temp_Ambiante', 'Temp_Exterieure', 'Puissance_IT', 'Porte_Status']
         
+        # Ajouter les colonnes CLIM individuelles si elles existent
+        clim_status_columns = [col for col in filtered_merged_data.columns if 'CLIM' in col and 'Status' in col]
+        numeric_vars.extend(clim_status_columns)
         
-        # Convert Porte_Status to numeric if needed
-        if 'Porte_Status' in corr_data.columns:
-            if corr_data['Porte_Status'].dtype == 'object':
-                corr_data['Porte_Status'] = corr_data['Porte_Status'].map({
-                    'Open': 1, 'Ouvert': 1, 'open': 1, '1': 1, 1: 1,
-                    'Close': 0, 'Fermé': 0, 'closed': 0, '0': 0, 0: 0
-                })
-            corr_data['Porte_Status'] = pd.to_numeric(corr_data['Porte_Status'], errors='coerce')
+        available_vars = [var for var in numeric_vars if var in filtered_merged_data.columns]
         
-        # Convert CLIM columns to numeric
-        for col in clim_status_columns:
-            if col in corr_data.columns:
-                if corr_data[col].dtype == 'object':
-                    corr_data[col] = corr_data[col].map({
-                        'ON': 1, 'on': 1, 'On': 1, '1': 1, 1: 1,
-                        'OFF': 0, 'off': 0, 'Off': 0, '0': 0, 0: 0
+        if len(available_vars) >= 2:
+            # Create a copy for correlation calculation to avoid modifying original data
+            corr_data = filtered_merged_data[available_vars].copy()
+            
+            # Convert Porte_Status to numeric if needed
+            if 'Porte_Status' in corr_data.columns:
+                if corr_data['Porte_Status'].dtype == 'object':
+                    corr_data['Porte_Status'] = corr_data['Porte_Status'].map({
+                        'Open': 1, 'Ouvert': 1, 'open': 1, '1': 1, 1: 1,
+                        'Close': 0, 'Fermé': 0, 'closed': 0, '0': 0, 0: 0
                     })
-                corr_data[col] = pd.to_numeric(corr_data[col], errors='coerce')
-        
-        # Only keep rows where at least 50% of values are non-NaN
-        min_non_nan = len(available_vars) * 0.5
-        corr_data = corr_data.dropna(thresh=min_non_nan)
-        
-        # Calculate correlation matrix with both methods
-        if len(corr_data) > 10:  # Need minimum data points
-            # Calculate both Pearson and Spearman
-            pearson_corr = corr_data.corr(method='pearson')
-            spearman_corr = corr_data.corr(method='spearman')
+                corr_data['Porte_Status'] = pd.to_numeric(corr_data['Porte_Status'], errors='coerce')
             
-            # Use Spearman by default as it's more robust
-            corr_matrix = spearman_corr
-        else:
-            st.warning("⚠️ Données insuffisantes pour calculer les relations. Au moins 10 points de données sont nécessaires.")
-            corr_matrix = pd.DataFrame()
-        
-        if not corr_matrix.empty and 'Temp_Ambiante' in corr_matrix.columns:
+            # Convert CLIM columns to numeric
+            for col in clim_status_columns:
+                if col in corr_data.columns:
+                    if corr_data[col].dtype == 'object':
+                        corr_data[col] = corr_data[col].map({
+                            'ON': 1, 'on': 1, 'On': 1, '1': 1, 1: 1,
+                            'OFF': 0, 'off': 0, 'Off': 0, '0': 0, 0: 0
+                        })
+                    corr_data[col] = pd.to_numeric(corr_data[col], errors='coerce')
             
-            # Extract correlations with Temp_Ambiante
-            temp_correlations = corr_matrix['Temp_Ambiante'].drop('Temp_Ambiante', errors='ignore')
+            # Only keep rows where at least 50% of values are non-NaN
+            min_non_nan = len(available_vars) * 0.5
+            corr_data = corr_data.dropna(thresh=min_non_nan)
             
-            # Function to interpret correlation strength
-            def interpret_correlation(value):
-                abs_val = abs(value)
-                if abs_val >= 0.8:
-                    return "très forte", "🔴"
-                elif abs_val >= 0.6:
-                    return "forte", "🟠"
-                elif abs_val >= 0.4:
-                    return "modérée", "🟡"
-                elif abs_val >= 0.2:
-                    return "faible", "🟢"
-                else:
-                    return "négligeable", "⚪"
+            # Calculate correlation matrix with both methods
+            if len(corr_data) > 10:  # Need minimum data points
+                # Calculate both Pearson and Spearman
+                pearson_corr = corr_data.corr(method='pearson')
+                spearman_corr = corr_data.corr(method='spearman')
+                
+                # Use Spearman by default as it's more robust
+                corr_matrix = spearman_corr
+            else:
+                st.warning("⚠️ Données insuffisantes pour calculer les relations. Au moins 10 points de données sont nécessaires.")
+                corr_matrix = pd.DataFrame()
             
-            # Function to get relationship description
-            def get_relationship_description(var, corr_value):
-                strength, emoji = interpret_correlation(corr_value)
+            if not corr_matrix.empty and 'Temp_Ambiante' in corr_matrix.columns:
                 
-                if pd.isna(corr_value):
-                    return f"{emoji} **{var}**: Données insuffisantes pour établir une relation"
+                # Extract correlations with Temp_Ambiante
+                temp_correlations = corr_matrix['Temp_Ambiante'].drop('Temp_Ambiante', errors='ignore')
                 
-                if abs(corr_value) < 0.2:
-                    return f"{emoji} **{var}**: Aucune relation significative détectée"
-                
-                direction = "augmente" if corr_value > 0 else "diminue"
-                opposite = "augmente" if corr_value > 0 else "diminue"
-                
-                # Custom descriptions for each variable
-                descriptions = {
-                    'Temp_Exterieure': {
-                        'positive': f"Quand la température extérieure augmente, la température ambiante tend à augmenter également (relation {strength})",
-                        'negative': f"Quand la température extérieure augmente, la température ambiante tend à diminuer (relation {strength} - situation inhabituelle)"
-                    },
-                    'Puissance_IT': {
-                        'positive': f"Quand la charge IT augmente, la température ambiante augmente (relation {strength})",
-                        'negative': f"Quand la charge IT augmente, la température ambiante diminue (relation {strength} - situation inhabituelle)"
-                    },
-                    'Porte_Status': {
-                        'positive': f"Les ouvertures de porte ont tendance à faire augmenter la température ambiante (relation {strength})",
-                        'negative': f"Les ouvertures de porte ont tendance à faire baisser la température ambiante (relation {strength})"
-                    }
-                }
-                
-                # For CLIM units
-                if 'CLIM' in var and 'Status' in var:
-                    if corr_value < 0:
-                        return f"L'activation de {var.replace('_Status', '')} aide à réduire la température (relation {strength})"
+                # Function to interpret correlation strength and get priority
+                def interpret_correlation(value):
+                    abs_val = abs(value)
+                    if abs_val >= 0.8:
+                        return "très forte", "🔴"
+                    elif abs_val >= 0.6:
+                        return "forte", "🟠"
+                    elif abs_val >= 0.4:
+                        return "modérée", "🟡"
+                    elif abs_val >= 0.2:
+                        return "faible", "🟢"
                     else:
-                        return f"L'activation de {var.replace('_Status', '')} est associée à une hausse de température (relation {strength} - vérifier l'efficacité)"
+                        return "négligeable", "⚪"
                 
-                # Get appropriate description
-                if var in descriptions:
-                    desc_key = 'positive' if corr_value > 0 else 'negative'
-                    base_desc = descriptions[var][desc_key]
-                else:
-                    base_desc = f"Relation {strength} {'positive' if corr_value > 0 else 'négative'} avec {var}"
+                def get_priority_from_correlation(value):
+                    abs_val = abs(value)
+                    if abs_val >= 0.8:
+                        return "Critique", "🔴"
+                    elif abs_val >= 0.6:
+                        return "Élevée", "🟠"
+                    elif abs_val >= 0.4:
+                        return "Modérée", "🟡"
+                    elif abs_val >= 0.2:
+                        return "Faible", "🟢"
+                    else:
+                        return "Minimale", "⚪"
                 
-                return f"{emoji} **{var}**: {base_desc}"
-            
-            # Main analysis section
-            st.markdown("## 📊 Comprendre les Relations avec la Température Ambiante")
-            st.markdown("""
-            Cette analyse identifie les facteurs qui influencent la température ambiante dans votre centre de données.
-            Les relations sont classées par ordre d'importance pour faciliter la prise de décision.
-            """)
-            
-            # Sort correlations by absolute value
-            sorted_correlations = temp_correlations.abs().sort_values(ascending=False)
-            
-            # Key drivers section
-            st.markdown("### 🎯 Facteurs Principaux Affectant la Température")
-            
-            # Identify top drivers
-            top_drivers = []
-            for var in sorted_correlations.index:
-                corr_val = temp_correlations[var]
-                if abs(corr_val) >= 0.3:  # Only significant correlations
-                    top_drivers.append((var, corr_val))
-            
-            if top_drivers:
-                st.markdown("**Facteurs ayant un impact significatif (classés par importance):**")
+                # Function to get relationship description
+                def get_relationship_description(var, corr_value):
+                    strength, emoji = interpret_correlation(corr_value)
+                    
+                    if pd.isna(corr_value):
+                        return f"{emoji} **{var}**: Données insuffisantes pour établir une relation"
+                    
+                    if abs(corr_value) < 0.2:
+                        return f"{emoji} **{var}**: Aucune relation significative détectée"
+                    
+                    direction = "augmente" if corr_value > 0 else "diminue"
+                    opposite = "augmente" if corr_value > 0 else "diminue"
+                    
+                    # Custom descriptions for each variable
+                    descriptions = {
+                        'Temp_Exterieure': {
+                            'positive': f"Quand la température extérieure augmente, la température ambiante tend à augmenter également (relation {strength})",
+                            'negative': f"Quand la température extérieure augmente, la température ambiante tend à diminuer (relation {strength} - situation inhabituelle)"
+                        },
+                        'Puissance_IT': {
+                            'positive': f"Quand la charge IT augmente, la température ambiante augmente (relation {strength})",
+                            'negative': f"Quand la charge IT augmente, la température ambiante diminue (relation {strength} - situation inhabituelle)"
+                        },
+                        'Porte_Status': {
+                            'positive': f"Les ouvertures de porte ont tendance à faire augmenter la température ambiante (relation {strength})",
+                            'negative': f"Les ouvertures de porte ont tendance à faire baisser la température ambiante (relation {strength})"
+                        }
+                    }
+                    
+                    # For CLIM units
+                    if 'CLIM' in var and 'Status' in var:
+                        if corr_value < 0:
+                            return f"L'activation de {var.replace('_Status', '')} aide à réduire la température (relation {strength})"
+                        else:
+                            return f"L'activation de {var.replace('_Status', '')} est associée à une hausse de température (relation {strength} - vérifier l'efficacité)"
+                    
+                    # Get appropriate description
+                    if var in descriptions:
+                        desc_key = 'positive' if corr_value > 0 else 'negative'
+                        base_desc = descriptions[var][desc_key]
+                    else:
+                        base_desc = f"Relation {strength} {'positive' if corr_value > 0 else 'négative'} avec {var}"
+                    
+                    return f"{emoji} **{var}**: {base_desc}"
+                
+                # Main analysis section
+                st.markdown("## 📊 Comprendre les Relations avec la Température Ambiante")
+                st.markdown("""
+                Cette analyse identifie les facteurs qui influencent la température ambiante dans votre centre de données.
+                Les relations sont classées par ordre d'importance pour faciliter la prise de décision.
+                """)
+                
+                # Sort correlations by absolute value
+                sorted_correlations = temp_correlations.abs().sort_values(ascending=False)
+                
+                # Key drivers section
+                st.markdown("### 🎯 Facteurs Principaux Affectant la Température")
+                
+                # Identify top drivers
+                top_drivers = []
+                for var in sorted_correlations.index:
+                    corr_val = temp_correlations[var]
+                    if abs(corr_val) >= 0.3:  # Only significant correlations
+                        top_drivers.append((var, corr_val))
+                
+                if top_drivers:
+                    st.markdown("**Facteurs ayant un impact significatif (classés par importance):**")
                 
                 for i, (var, corr_val) in enumerate(top_drivers, 1):
                     strength, emoji = interpret_correlation(corr_val)
@@ -2682,159 +2892,562 @@ with tab7:
                     
                     impact_desc = get_relationship_description(var, corr_val)
                     st.markdown(f"{i}. {impact_desc}")
-            else:
-                st.info("Aucun facteur n'a d'impact significatif sur la température pendant cette période.")
-        
-            # Detailed insights section
-            st.markdown("### 💡 Insights Détaillés et Recommandations")
-            
-            # Create three columns for different categories
-            col1, col2, col3 = st.columns(3)
-            
-            with col1:
-                st.markdown("#### 🌡️ Facteurs Environnementaux")
-                if 'Temp_Exterieure' in temp_correlations:
-                    ext_corr = temp_correlations['Temp_Exterieure']
-                    if abs(ext_corr) > 0.5:
-                        st.error(f"Impact élevé de la température extérieure (corrélation: {ext_corr:.2f})")
-                        st.markdown("**Recommandations:**")
-                        st.markdown("- Améliorer l'isolation thermique")
-                        st.markdown("- Vérifier l'étanchéité du bâtiment")
-                        st.markdown("- Installer des pare-soleil si nécessaire")
-                    elif abs(ext_corr) > 0.3:
-                        st.warning(f"Impact modéré de la température extérieure (corrélation: {ext_corr:.2f})")
-                        st.markdown("**Recommandations:**")
-                        st.markdown("- Surveiller lors des pics de chaleur")
-                        st.markdown("- Planifier la maintenance préventive")
-                    else:
-                        st.success(f"Bonne isolation thermique (corrélation: {ext_corr:.2f})")
-                        st.markdown("- L'isolation fonctionne bien")
-                        st.markdown("- Maintenir les bonnes pratiques")
-            
-            with col2:
-                st.markdown("#### ❄️ Système de Refroidissement")
-                clim_effectiveness = []
-                for col in clim_status_columns:
-                    if col in temp_correlations:
-                        clim_effectiveness.append((col, temp_correlations[col]))
-                
-                if clim_effectiveness:
-                    effective_units = [unit for unit, corr in clim_effectiveness if corr < -0.2]
-                    ineffective_units = [unit for unit, corr in clim_effectiveness if corr >= 0]
-                    
-                    if effective_units:
-                        st.success(f"{len(effective_units)} unité(s) CLIM fonctionnent correctement")
-                        for unit in effective_units:
-                            unit_name = unit.replace('_Status', '')
-                            st.markdown(f"- ✅ {unit_name} réduit efficacement la température")
-                    
-                    if ineffective_units:
-                        st.error(f"{len(ineffective_units)} unité(s) CLIM nécessitent attention")
-                        for unit in ineffective_units:
-                            unit_name = unit.replace('_Status', '')
-                            st.markdown(f"- ⚠️ {unit_name} pourrait nécessiter maintenance")
-                        st.markdown("**Action requise:** Vérifier l'efficacité de ces unités")
                 else:
-                    st.info("Données CLIM non disponibles")
-            
-            with col3:
-                st.markdown("#### 💻 Charge IT et Accès")
-                if 'Puissance_IT' in temp_correlations:
+                    st.info("Aucun facteur n'a d'impact significatif sur la température pendant cette période.")
+                
+                # Detailed insights section
+                st.markdown("### 💡 Insights Détaillés et Recommandations")
+                
+                # Create three columns for different categories
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    st.markdown("#### 🌡️ Facteurs Environnementaux")
+                    if 'Temp_Exterieure' in temp_correlations:
+                        ext_corr = temp_correlations['Temp_Exterieure']
+                        if abs(ext_corr) > 0.5:
+                            st.error(f"Impact élevé de la température extérieure (corrélation: {ext_corr:.2f})")
+                            st.markdown("**Recommandations:**")
+                            st.markdown("- Améliorer l'isolation thermique")
+                            st.markdown("- Vérifier l'étanchéité du bâtiment")
+                            st.markdown("- Installer des pare-soleil si nécessaire")
+                        elif abs(ext_corr) > 0.3:
+                            st.warning(f"Impact modéré de la température extérieure (corrélation: {ext_corr:.2f})")
+                            st.markdown("**Recommandations:**")
+                            st.markdown("- Surveiller lors des pics de chaleur")
+                            st.markdown("- Planifier la maintenance préventive")
+                        else:
+                            st.success(f"Bonne isolation thermique (corrélation: {ext_corr:.2f})")
+                            st.markdown("- L'isolation fonctionne bien")
+                            st.markdown("- Maintenir les bonnes pratiques")
+                
+                with col2:
+                    st.markdown("#### ❄️ Système de Refroidissement")
+                    clim_effectiveness = []
+                    for col in clim_status_columns:
+                        if col in temp_correlations:
+                            clim_effectiveness.append((col, temp_correlations[col]))
+                    
+                    if clim_effectiveness:
+                        effective_units = [unit for unit, corr in clim_effectiveness if corr < -0.2]
+                        ineffective_units = [unit for unit, corr in clim_effectiveness if corr >= 0]
+                        
+                        if effective_units:
+                            st.success(f"{len(effective_units)} unité(s) CLIM fonctionnent correctement")
+                            for unit in effective_units:
+                                unit_name = unit.replace('_Status', '')
+                                st.markdown(f"- ✅ {unit_name} réduit efficacement la température")
+                        
+                        if ineffective_units:
+                            st.error(f"{len(ineffective_units)} unité(s) CLIM nécessitent attention")
+                            for unit in ineffective_units:
+                                unit_name = unit.replace('_Status', '')
+                                st.markdown(f"- ⚠️ {unit_name} pourrait nécessiter maintenance")
+                            st.markdown("**Action requise:** Vérifier l'efficacité de ces unités")
+                    else:
+                        st.info("Données CLIM non disponibles")
+                
+                with col3:
+                    st.markdown("#### 💻 Charge IT et Accès")
+                    if 'Puissance_IT' in temp_correlations:
+                        it_corr = temp_correlations['Puissance_IT']
+                        if abs(it_corr) > 0.5:
+                            st.warning(f"Forte influence de la charge IT (corrélation: {it_corr:.2f})")
+                            st.markdown("**Recommandations:**")
+                            st.markdown("- Optimiser la distribution de charge")
+                            st.markdown("- Considérer l'ajout de capacité de refroidissement")
+                        else:
+                            st.success(f"Impact IT gérable (corrélation: {it_corr:.2f})")
+                    
+                    if 'Porte_Status' in temp_correlations:
+                        door_corr = temp_correlations['Porte_Status']
+                        if abs(door_corr) > 0.3:
+                            st.warning(f"Impact des ouvertures de porte (corrélation: {door_corr:.2f})")
+                            st.markdown("**Recommandations:**")
+                            st.markdown("- Former le personnel aux bonnes pratiques")
+                            st.markdown("- Installer des alertes pour portes ouvertes")
+                        else:
+                            st.success("Impact minimal des portes")
+                
+                # Summary and action plan
+                st.markdown("### 📋 Plan d'Action Prioritaire")
+                
+                # Generate priority actions based on correlations
+                priority_actions = []
+                
+                # Check external temperature
+                if 'Temp_Exterieure' in temp_correlations and abs(temp_correlations['Temp_Exterieure']) > 0.2:
+                    ext_corr = temp_correlations['Temp_Exterieure']
+                    priority, emoji = get_priority_from_correlation(ext_corr)
+                    priority_actions.append((priority, emoji, "Améliorer l'isolation thermique du bâtiment", 
+                                            f"Impact température extérieure (corrélation: {ext_corr:.2f})"))
+                
+                # Check CLIM effectiveness
+                ineffective_clims_details = []
+                for col in clim_status_columns:
+                    if col in temp_correlations and temp_correlations[col] >= 0:
+                        corr_value = temp_correlations[col]
+                        clim_name = col.replace('_Status', '').replace('_', ' ')
+                        ineffective_clims_details.append((clim_name, corr_value))
+                
+                if ineffective_clims_details:
+                    ineffective_count = len(ineffective_clims_details)
+                    
+                    # Generate specific reason based on correlation findings
+                    if ineffective_count == 1:
+                        clim_name, corr_val = ineffective_clims_details[0]
+                        if corr_val > 0.3:
+                            reason = f"L'unité {clim_name} augmente la température au lieu de la refroidir (corrélation: +{corr_val:.2f})"
+                        else:
+                            reason = f"L'unité {clim_name} n'a aucun effet de refroidissement (corrélation: +{corr_val:.2f})"
+                    else:
+                        avg_corr = sum(corr for _, corr in ineffective_clims_details) / ineffective_count
+                        worst_clim = max(ineffective_clims_details, key=lambda x: x[1])
+                        if avg_corr > 0.3:
+                            reason = f"Plusieurs unités augmentent la température (pire: {worst_clim[0]} +{worst_clim[1]:.2f})"
+                        else:
+                            reason = f"Plusieurs unités n'ont aucun effet de refroidissement (corrélation moyenne: +{avg_corr:.2f})"
+                    
+                    # Determine priority based on worst correlation
+                    worst_corr = max(corr for _, corr in ineffective_clims_details)
+                    priority, emoji = get_priority_from_correlation(worst_corr)
+                    priority_actions.append((priority, emoji, f"Maintenance urgente de {ineffective_count} unité(s) CLIM",
+                                            reason))
+                
+                # Check IT load
+                if 'Puissance_IT' in temp_correlations and temp_correlations['Puissance_IT'] > 0.2:
                     it_corr = temp_correlations['Puissance_IT']
-                    if abs(it_corr) > 0.5:
-                        st.warning(f"Forte influence de la charge IT (corrélation: {it_corr:.2f})")
-                        st.markdown("**Recommandations:**")
-                        st.markdown("- Optimiser la distribution de charge")
-                        st.markdown("- Considérer l'ajout de capacité de refroidissement")
-                    else:
-                        st.success(f"Impact IT gérable (corrélation: {it_corr:.2f})")
+                    priority, emoji = get_priority_from_correlation(it_corr)
+                    priority_actions.append((priority, emoji, "Optimiser la répartition de la charge IT",
+                                            f"Impact charge IT (corrélation: +{it_corr:.2f})"))
                 
-                if 'Porte_Status' in temp_correlations:
+                # Check door impact
+                if 'Porte_Status' in temp_correlations and abs(temp_correlations['Porte_Status']) > 0.2:
                     door_corr = temp_correlations['Porte_Status']
-                    if abs(door_corr) > 0.3:
-                        st.warning(f"Impact des ouvertures de porte (corrélation: {door_corr:.2f})")
-                        st.markdown("**Recommandations:**")
-                        st.markdown("- Former le personnel aux bonnes pratiques")
-                        st.markdown("- Installer des alertes pour portes ouvertes")
-                    else:
-                        st.success("Impact minimal des portes")
-            
-            # Summary and action plan
-            st.markdown("### 📋 Plan d'Action Prioritaire")
-            
-            # Generate priority actions based on correlations
-            priority_actions = []
-            
-            # Check external temperature
-            if 'Temp_Exterieure' in temp_correlations and abs(temp_correlations['Temp_Exterieure']) > 0.5:
-                priority_actions.append(("Haute", "🔴", "Améliorer l'isolation thermique du bâtiment", 
-                                        "La température extérieure a un impact trop important"))
-            
-            # Check CLIM effectiveness
-            ineffective_clims = sum(1 for col in clim_status_columns 
-                                   if col in temp_correlations and temp_correlations[col] >= 0)
-            if ineffective_clims > 0:
-                priority_actions.append(("Haute", "🔴", f"Maintenance urgente de {ineffective_clims} unité(s) CLIM",
-                                        "Certaines unités ne refroidissent pas efficacement"))
-            
-            # Check IT load
-            if 'Puissance_IT' in temp_correlations and temp_correlations['Puissance_IT'] > 0.6:
-                priority_actions.append(("Moyenne", "🟡", "Optimiser la répartition de la charge IT",
-                                        "La charge IT contribue significativement à la chaleur"))
-            
-            # Check door impact
-            if 'Porte_Status' in temp_correlations and abs(temp_correlations['Porte_Status']) > 0.4:
-                priority_actions.append(("Moyenne", "🟡", "Réviser les procédures d'accès",
-                                        "Les ouvertures de porte affectent la température"))
-            
-            if priority_actions:
-                st.markdown("**Actions recommandées par ordre de priorité:**")
+                    priority, emoji = get_priority_from_correlation(door_corr)
+                    priority_actions.append((priority, emoji, "Réviser les procédures d'accès",
+                                            f"Impact ouvertures porte (corrélation: {door_corr:.2f})"))
                 
-                # Sort by priority
-                priority_order = {"Haute": 1, "Moyenne": 2, "Basse": 3}
-                priority_actions.sort(key=lambda x: priority_order[x[0]])
+                if priority_actions:
+                    st.markdown("**Actions recommandées par ordre de priorité:**")
+                    
+                    # Sort by priority
+                    priority_order = {"Critique": 1, "Élevée": 2, "Modérée": 3, "Faible": 4, "Minimale": 5}
+                    priority_actions.sort(key=lambda x: priority_order.get(x[0], 5))
+                    
+                    for priority, emoji, action, reason in priority_actions:
+                        st.markdown(f"{emoji} **Priorité {priority}:** {action}")
+                        st.markdown(f"   *Raison: {reason}*")
+                else:
+                    st.success("✅ Aucune action urgente requise. Le système fonctionne dans des paramètres acceptables.")
                 
-                for priority, emoji, action, reason in priority_actions:
-                    st.markdown(f"{emoji} **Priorité {priority}:** {action}")
-                    st.markdown(f"   *Raison: {reason}*")
-            else:
-                st.success("✅ Aucune action urgente requise. Le système fonctionne dans des paramètres acceptables.")
-            
-            # Technical details expander for those who want more info
-            with st.expander("📊 Détails Techniques (pour les experts)", expanded=False):
-                st.markdown("#### Valeurs de Corrélation")
-                
-                # Create a clean dataframe for display
-                tech_df = pd.DataFrame({
-                    'Variable': temp_correlations.index,
-                    'Corrélation': temp_correlations.values,
-                    'Interprétation': [interpret_correlation(x)[0] for x in temp_correlations.values],
-                    'Impact': ['Positif' if x > 0 else 'Négatif' if x < 0 else 'Neutre' for x in temp_correlations.values]
-                })
-                tech_df = tech_df.sort_values('Corrélation', key=abs, ascending=False)
-                
-                st.dataframe(
-                    tech_df.style.format({'Corrélation': '{:.3f}'})
-                    .background_gradient(subset=['Corrélation'], cmap='RdBu_r', vmin=-1, vmax=1),
-                    use_container_width=True
-                )
-                
-                st.markdown("""
-                **Guide d'interprétation:**
-                - **Corrélation positive:** Les deux variables évoluent dans le même sens
-                - **Corrélation négative:** Les variables évoluent en sens opposé
-                - **Valeur absolue:** Indique la force de la relation (0 = aucune, 1 = parfaite)
-                - **Méthode utilisée:** Corrélation de Spearman (robuste aux valeurs extrêmes)
-                """)
+                # Technical details expander for those who want more info
+                with st.expander("📊 Détails Techniques (pour les experts)", expanded=False):
+                    st.markdown("#### Valeurs de Corrélation")
+                    
+                    # Create a clean dataframe for display
+                    tech_df = pd.DataFrame({
+                        'Variable': temp_correlations.index,
+                        'Corrélation': temp_correlations.values,
+                        'Interprétation': [interpret_correlation(x)[0] for x in temp_correlations.values],
+                        'Impact': ['Positif' if x > 0 else 'Négatif' if x < 0 else 'Neutre' for x in temp_correlations.values]
+                    })
+                    tech_df = tech_df.sort_values('Corrélation', key=abs, ascending=False)
+                    
+                    st.dataframe(
+                        tech_df.style.format({'Corrélation': '{:.3f}'})
+                        .background_gradient(subset=['Corrélation'], cmap='RdBu_r', vmin=-1, vmax=1),
+                        use_container_width=True
+                    )
+                    
+                    st.markdown("""
+                    **Guide d'interprétation:**
+                    - **Corrélation positive:** Les deux variables évoluent dans le même sens
+                    - **Corrélation négative:** Les variables évoluent en sens opposé
+                    - **Valeur absolue:** Indique la force de la relation (0 = aucune, 1 = parfaite)
+                    - **Méthode utilisée:** Corrélation de Spearman (robuste aux valeurs extrêmes)
+                    """)
         
         else:
             if corr_matrix.empty:
-                st.warning("⚠️ Impossible de calculer les relations entre variables. Vérifiez la disponibilité des données.")
+                st.error("⚠️ **Analyse de corrélation impossible**")
+                st.markdown("""
+                **Causes possibles:**
+                - Données insuffisantes (moins de 10 points après filtrage)
+                - Trop de valeurs manquantes dans les variables sélectionnées
+                
+                **Solutions:**
+                - Sélectionnez une période plus large dans la barre latérale
+                - Choisissez un POP avec plus de données (ex: Marrakech > BGU-ONE)
+                - Vérifiez la disponibilité des capteurs pour cette période
+                """)
+                
+                # Afficher des statistiques de débogage
+                with st.expander("🔍 Diagnostics des données", expanded=False):
+                    if len(available_vars) >= 2:
+                        debug_data = filtered_merged_data[available_vars].copy()
+                        st.write(f"**Variables disponibles:** {len(available_vars)}")
+                        st.write(f"**Période sélectionnée:** {len(debug_data)} points de données")
+                        
+                        # Montrer la qualité des données par variable
+                        for var in available_vars:
+                            non_null_count = debug_data[var].notna().sum()
+                            percentage = (non_null_count / len(debug_data) * 100) if len(debug_data) > 0 else 0
+                            st.write(f"- **{var}:** {non_null_count} valeurs ({percentage:.1f}%)")
+                            
+                        # Calculer combien de lignes restent après nettoyage
+                        min_non_nan = len(available_vars) * 0.5
+                        clean_data = debug_data.dropna(thresh=min_non_nan)
+                        st.write(f"**Données utilisables après nettoyage:** {len(clean_data)} points")
+                        
+                        if len(clean_data) <= 10:
+                            st.error(f"❌ Seulement {len(clean_data)} points utilisables (minimum: 10)")
+                        else:
+                            st.success(f"✅ {len(clean_data)} points utilisables (suffisant)")
+                    
             else:
-                st.warning("⚠️ La variable 'Temp_Ambiante' n'est pas disponible dans les données.")
+                st.warning("⚠️ **La variable 'Temp_Ambiante' n'est pas disponible**")
+                st.info("Cette analyse nécessite la température ambiante comme référence. Vérifiez que le capteur de température fonctionne correctement.")
     
-    else:
-        st.warning("⚠️ Pas assez de variables disponibles pour l'analyse des relations")
+    # Tab 2: Comparaison Multi-POPs
+    with corr_tab2:
+        st.markdown("### 🌐 Tableau de Corrélation Multi-POPs")
+        st.markdown("""
+        Cette analyse compare les corrélations de température ambiante avec d'autres métriques 
+        à travers plusieurs POPs pour identifier les tendances et anomalies régionales.
+        """)
+        
+        # Sélection du mode de chargement
+        load_mode = st.radio(
+            "Mode de sélection des POPs",
+            ["📍 POPs de la région actuelle", "🌍 Toutes les régions", "✅ Sélection personnalisée"]
+        )
+        
+        # Initialiser le cleaner
+        cleaner = DataCleaner()
+        
+        # Déterminer quels POPs charger
+        pops_to_load = []
+        
+        if load_mode == "📍 POPs de la région actuelle":
+            # Charger tous les POPs de la région actuelle
+            current_pops = cleaner.get_pops(selected_region)
+            pops_to_load = [(selected_region, pop) for pop in current_pops]
+            st.info(f"Chargement de {len(pops_to_load)} POPs de la région {selected_region}")
+            
+        elif load_mode == "🌍 Toutes les régions":
+            # Option pour limiter le nombre de POPs
+            max_pops = st.slider("Nombre maximum de POPs à charger", 5, 50, 20)
+            all_pops = []
+            for region in cleaner.get_regions():
+                region_pops = cleaner.get_pops(region)
+                for pop in region_pops[:3]:  # Limiter à 3 POPs par région
+                    all_pops.append((region, pop))
+            pops_to_load = all_pops[:max_pops]
+            st.info(f"Chargement de {len(pops_to_load)} POPs à travers toutes les régions")
+            
+        else:  # Sélection personnalisée
+            # Créer une interface de sélection multi-région/POP
+            selected_regions = st.multiselect(
+                "Sélectionner les régions",
+                cleaner.get_regions(),
+                default=[selected_region]
+            )
+            
+            if selected_regions:
+                # Pour chaque région sélectionnée, permettre la sélection de POPs
+                for region in selected_regions:
+                    available_pops = cleaner.get_pops(region)
+                    if available_pops:
+                        selected_pops = st.multiselect(
+                            f"POPs de {region}",
+                            available_pops,
+                            default=available_pops[:min(3, len(available_pops))]
+                        )
+                        for pop in selected_pops:
+                            pops_to_load.append((region, pop))
+        
+        # Bouton pour lancer l'analyse
+        if st.button("🔄 Lancer l'analyse Multi-POPs", key="launch_multi_pop"):
+            if pops_to_load:
+                with st.spinner(f"Chargement de {len(pops_to_load)} POPs..."):
+                    # Charger les données de tous les POPs
+                    all_pops_data = cleaner.load_multiple_pops(pop_list=pops_to_load)
+                    
+                    if all_pops_data:
+                        # Calculer les corrélations pour tous les POPs
+                        period = (start_date, end_date) if start_date and end_date else None
+                        correlation_df = cleaner.calculate_pop_correlations(
+                            all_pops_data, 
+                            metric='Temp_Ambiante',
+                            period=period
+                        )
+                        
+                        if not correlation_df.empty:
+                            # Afficher les résultats
+                            st.success(f"✅ Analyse complète pour {len(correlation_df)} POPs")
+                            
+                            # Vue d'ensemble
+                            col1, col2, col3, col4 = st.columns(4)
+                            with col1:
+                                st.metric("POPs analysés", len(correlation_df))
+                            with col2:
+                                avg_temp = correlation_df['Temp_Ambiante_Mean'].mean()
+                                st.metric("Temp. moyenne globale", f"{avg_temp:.1f}°C")
+                            with col3:
+                                regions_count = correlation_df['Region'].nunique()
+                                st.metric("Régions couvertes", regions_count)
+                            with col4:
+                                total_points = correlation_df['Data_Points'].sum()
+                                st.metric("Points de données totaux", f"{total_points:,}")
+                            
+                            # Créer un tableau de corrélation formaté
+                            st.markdown("### 📊 Matrice de Corrélation des POPs")
+                            
+                            # Sélectionner les colonnes pertinentes pour l'affichage
+                            display_columns = ['Region', 'POP', 'Temp_Ambiante_Mean', 'Temp_Ambiante_Std']
+                            
+                            # Ajouter les colonnes de corrélation Spearman
+                            corr_columns = [col for col in correlation_df.columns if 'Spearman' in col]
+                            display_columns.extend(corr_columns)
+                            
+                            # Créer le DataFrame d'affichage
+                            display_df = correlation_df[display_columns].copy()
+                            
+                            # Renommer les colonnes pour plus de clarté
+                            rename_dict = {
+                                'Temp_Ambiante_Mean': 'Temp Moy (°C)',
+                                'Temp_Ambiante_Std': 'Écart-type',
+                                'Temp_Exterieure_Spearman': 'Corr. Temp Ext',
+                                'Puissance_IT_Spearman': 'Corr. Puissance IT',
+                                'Puissance_CLIM_Spearman': 'Corr. CLIM',
+                                'Porte_Status_Spearman': 'Corr. Porte'
+                            }
+                            
+                            for col in corr_columns:
+                                if 'CLIM_' in col and '_Status_Spearman' in col:
+                                    clim_name = col.replace('_Status_Spearman', '').replace('_', ' ')
+                                    rename_dict[col] = f'Corr. {clim_name}'
+                            
+                            display_df.rename(columns=rename_dict, inplace=True)
+                            
+                            # Fonction pour colorier les corrélations
+                            def color_correlation(val):
+                                if pd.isna(val):
+                                    return 'background-color: #f0f0f0'
+                                elif val > 0.7:
+                                    return 'background-color: #ff4444; color: white'
+                                elif val > 0.5:
+                                    return 'background-color: #ff9944'
+                                elif val > 0.3:
+                                    return 'background-color: #ffdd44'
+                                elif val < -0.5:
+                                    return 'background-color: #44ff44'
+                                elif val < -0.3:
+                                    return 'background-color: #44ddff'
+                                else:
+                                    return ''
+                            
+                            # Appliquer le style au DataFrame
+                            styled_df = display_df.style.format({
+                                'Temp Moy (°C)': '{:.1f}',
+                                'Écart-type': '{:.2f}'
+                            })
+                            
+                            # Appliquer la coloration aux colonnes de corrélation
+                            for col in display_df.columns:
+                                if 'Corr.' in col:
+                                    styled_df = styled_df.format({col: '{:.3f}'})
+                                    styled_df = styled_df.applymap(color_correlation, subset=[col])
+                            
+                            # Afficher le tableau
+                            st.dataframe(styled_df, use_container_width=True)
+                            
+                            # Légende des couleurs
+                            with st.expander("📖 Légende des corrélations"):
+                                st.markdown("""
+                                **Interprétation des couleurs:**
+                                - 🔴 **Rouge foncé** (> 0.7): Forte corrélation positive
+                                - 🟠 **Orange** (0.5 - 0.7): Corrélation positive modérée
+                                - 🟡 **Jaune** (0.3 - 0.5): Corrélation positive faible
+                                - ⬜ **Blanc** (-0.3 - 0.3): Pas de corrélation significative
+                                - 🟦 **Bleu clair** (-0.5 - -0.3): Corrélation négative faible
+                                - 🟢 **Vert** (< -0.5): Forte corrélation négative (bon pour CLIM)
+                                """)
+                            
+                            # Analyse des anomalies
+                            st.markdown("### 🔍 Détection d'Anomalies")
+                            
+                            # Identifier les POPs avec des corrélations inhabituelles
+                            anomalies = []
+                            
+                            # Vérifier la corrélation avec température extérieure
+                            if 'Temp_Exterieure_Spearman' in correlation_df.columns:
+                                high_ext_corr = correlation_df[correlation_df['Temp_Exterieure_Spearman'] > 0.7]
+                                for _, row in high_ext_corr.iterrows():
+                                    anomalies.append({
+                                        'POP': f"{row['Region']}/{row['POP']}",
+                                        'Type': 'Isolation insuffisante',
+                                        'Détail': f"Corrélation temp. ext: {row['Temp_Exterieure_Spearman']:.2f}",
+                                        'Priorité': 'Haute'
+                                    })
+                            
+                            # Vérifier l'efficacité des CLIM
+                            for clim_col in [col for col in correlation_df.columns if 'CLIM' in col and 'Spearman' in col]:
+                                ineffective_clim = correlation_df[correlation_df[clim_col] > 0]
+                                for _, row in ineffective_clim.iterrows():
+                                    clim_name = clim_col.replace('_Spearman', '').replace('_', ' ')
+                                    anomalies.append({
+                                        'POP': f"{row['Region']}/{row['POP']}",
+                                        'Type': 'CLIM inefficace',
+                                        'Détail': f"{clim_name} corrélation positive: {row[clim_col]:.2f}",
+                                        'Priorité': 'Moyenne'
+                                    })
+                            
+                            if anomalies:
+                                anomaly_df = pd.DataFrame(anomalies)
+                                # Grouper par POP et compter les anomalies
+                                anomaly_summary = anomaly_df.groupby('POP').agg({
+                                    'Type': 'count',
+                                    'Priorité': lambda x: 'Haute' if 'Haute' in x.values else 'Moyenne'
+                                }).rename(columns={'Type': 'Nombre d\'anomalies'})
+                                
+                                st.warning(f"⚠️ {len(anomaly_summary)} POPs présentent des anomalies")
+                                st.dataframe(anomaly_summary.sort_values('Nombre d\'anomalies', ascending=False))
+                                
+                                # Détails des anomalies
+                                with st.expander("📋 Détails des anomalies détectées"):
+                                    st.dataframe(anomaly_df)
+                            else:
+                                st.success("✅ Aucune anomalie majeure détectée")
+                            
+                            # Visualisations comparatives
+                            st.markdown("### 📈 Visualisations Comparatives")
+                            
+                            # Graphique en barres des températures moyennes par POP
+                            fig1 = go.Figure()
+                            
+                            # Trier par température moyenne
+                            sorted_df = correlation_df.sort_values('Temp_Ambiante_Mean')
+                            
+                            fig1.add_trace(go.Bar(
+                                x=[f"{row['Region']}/{row['POP']}" for _, row in sorted_df.iterrows()],
+                                y=sorted_df['Temp_Ambiante_Mean'],
+                                marker_color=['red' if temp > 25 else 'orange' if temp > 23 else 'green' 
+                                             for temp in sorted_df['Temp_Ambiante_Mean']],
+                                text=[f"{temp:.1f}°C" for temp in sorted_df['Temp_Ambiante_Mean']],
+                                textposition='outside'
+                            ))
+                            
+                            fig1.add_hline(y=24, line_dash="dash", line_color="red",
+                                          annotation_text="Seuil recommandé: 24°C")
+                            
+                            fig1.update_layout(
+                                title="Température Ambiante Moyenne par POP",
+                                xaxis_title="POP",
+                                yaxis_title="Température (°C)",
+                                height=500,
+                                xaxis_tickangle=-45
+                            )
+                            
+                            st.plotly_chart(fig1, use_container_width=True)
+                            
+                            # Heatmap des corrélations
+                            if len(correlation_df) > 1:
+                                st.markdown("#### 🗺️ Carte de Chaleur des Corrélations")
+                                
+                                # Préparer les données pour la heatmap
+                                metrics_for_heatmap = ['Temp_Exterieure_Spearman', 'Puissance_IT_Spearman', 
+                                                       'Puissance_CLIM_Spearman', 'Porte_Status_Spearman']
+                                
+                                # Filtrer les métriques disponibles
+                                available_metrics = [m for m in metrics_for_heatmap if m in correlation_df.columns]
+                                
+                                if available_metrics:
+                                    heatmap_data = correlation_df[['POP_ID'] + available_metrics].set_index('POP_ID')
+                                    
+                                    # Renommer les colonnes pour l'affichage
+                                    heatmap_data.columns = [col.replace('_Spearman', '').replace('_', ' ') 
+                                                           for col in heatmap_data.columns]
+                                    
+                                    fig2 = go.Figure(data=go.Heatmap(
+                                        z=heatmap_data.values.T,
+                                        x=heatmap_data.index,
+                                        y=heatmap_data.columns,
+                                        colorscale='RdBu_r',
+                                        zmid=0,
+                                        text=np.round(heatmap_data.values.T, 2),
+                                        texttemplate='%{text}',
+                                        textfont={"size": 10},
+                                        colorbar=dict(title="Corrélation")
+                                    ))
+                                    
+                                    fig2.update_layout(
+                                        title="Matrice de Corrélation Multi-POPs",
+                                        height=400 + len(available_metrics) * 30,
+                                        xaxis_tickangle=-45
+                                    )
+                                    
+                                    st.plotly_chart(fig2, use_container_width=True)
+                            
+                            # Recommandations par région
+                            st.markdown("### 💡 Recommandations par Région")
+                            
+                            region_stats = correlation_df.groupby('Region').agg({
+                                'Temp_Ambiante_Mean': 'mean',
+                                'Temp_Ambiante_Std': 'mean',
+                                'Data_Points': 'sum'
+                            }).round(2)
+                            
+                            for region in region_stats.index:
+                                region_data = correlation_df[correlation_df['Region'] == region]
+                                avg_temp = region_stats.loc[region, 'Temp_Ambiante_Mean']
+                                
+                                with st.expander(f"📍 {region} - Temp. moy: {avg_temp:.1f}°C"):
+                                    if avg_temp > 25:
+                                        st.error(f"⚠️ Température moyenne élevée ({avg_temp:.1f}°C)")
+                                        st.markdown("""
+                                        **Actions recommandées:**
+                                        - Augmenter la capacité de refroidissement
+                                        - Vérifier l'efficacité des unités CLIM
+                                        - Optimiser la circulation d'air
+                                        """)
+                                    elif avg_temp > 23:
+                                        st.warning(f"⚡ Température à surveiller ({avg_temp:.1f}°C)")
+                                        st.markdown("""
+                                        **Actions préventives:**
+                                        - Surveiller l'évolution
+                                        - Planifier la maintenance préventive
+                                        - Optimiser les réglages CLIM
+                                        """)
+                                    else:
+                                        st.success(f"✅ Température optimale ({avg_temp:.1f}°C)")
+                                    
+                                    # Afficher les POPs de cette région
+                                    st.write(f"**POPs dans cette région:** {len(region_data)}")
+                                    for _, pop_data in region_data.iterrows():
+                                        st.write(f"- {pop_data['POP']}: {pop_data['Temp_Ambiante_Mean']:.1f}°C")
+                            
+                            # Exporter les résultats
+                            st.markdown("### 💾 Export des Résultats")
+                            
+                            csv = correlation_df.to_csv(index=False)
+                            st.download_button(
+                                label="📥 Télécharger le rapport CSV",
+                                data=csv,
+                                file_name=f"correlation_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                                mime="text/csv"
+                            )
+                            
+                        else:
+                            st.error("❌ Aucune donnée de corrélation disponible pour les POPs sélectionnés")
+                    else:
+                        st.error("❌ Impossible de charger les données des POPs sélectionnés")
+            else:
+                st.warning("⚠️ Veuillez sélectionner au moins un POP pour l'analyse")
+        
+        else:
+            st.info("👆 Configurez les paramètres et cliquez sur 'Lancer l'analyse Multi-POPs' pour commencer")
 
 # 8. RAPPORTS
 with tab8:
@@ -2975,25 +3588,239 @@ with tab9:
     """)
     
     if all(col in filtered_merged_data.columns for col in ['Puissance_IT', 'Puissance_CLIM', 'Puissance_Generale']):
-        # Input pour le tarif électrique
-        col1, col2, col3 = st.columns([1, 1, 2])
-        with col1:
-            electricity_rate = st.number_input(
-                "💵 Tarif électrique ($/kWh)",
-                min_value=0.01,
-                max_value=1.0,
-                value=0.12,
-                step=0.01,
-                help="Entrez votre tarif électrique actuel"
-            )
+        # Configuration des tarifs électriques par période
+        st.subheader("⚡ Configuration des Tarifs Électriques")
         
-        with col2:
-            currency = st.selectbox(
-                "Devise",
-                ["USD ($)", "EUR (€)", "MAD (DH)"],
-                index=0
+        # Default to MAD (Moroccan Dirham)
+        currency = "MAD (DH)"
+        currency_symbol = "DH"
+        
+        # Choice between single or variable pricing
+        pricing_mode = st.radio(
+            "Mode de tarification:",
+            ["Tarif unique", "Tarifs variables par période de la journée"],
+            help="Choisissez entre un tarif unique ou des tarifs variables selon les heures"
+        )
+        
+        if pricing_mode == "Tarif unique":
+            # Single rate input
+            electricity_rate = st.number_input(
+                "💵 Tarif électrique (DH/kWh)",
+                min_value=0.01,
+                max_value=10.0,
+                value=1.2,
+                step=0.01,
+                help="Entrez votre tarif électrique actuel en dirhams marocains"
             )
-            currency_symbol = currency.split()[1].strip("()")
+            # Create hourly rates array (same rate for all hours)
+            hourly_rates = [electricity_rate] * 24
+        else:
+            # Variable pricing by time periods
+            st.info("💡 Configurez les tarifs électriques et les plages horaires pour différentes périodes de la journée (24h format)")
+            
+            # Time range configuration section
+            st.subheader("⏰ Configuration des Plages Horaires")
+            st.write("Définissez les heures de début et de fin pour chaque période tarifaire:")
+            
+            time_col1, time_col2, time_col3 = st.columns(3)
+            
+            with time_col1:
+                st.markdown("##### 🌙 Heures Creuses")
+                off_peak_start = st.number_input(
+                    "Heure de début (0-23)",
+                    min_value=0,
+                    max_value=23,
+                    value=22,
+                    step=1,
+                    key="off_peak_start",
+                    help="Heure de début des heures creuses (format 24h)"
+                )
+                off_peak_end = st.number_input(
+                    "Heure de fin (0-23)", 
+                    min_value=0,
+                    max_value=23,
+                    value=6,
+                    step=1,
+                    key="off_peak_end",
+                    help="Heure de fin des heures creuses (format 24h)"
+                )
+                
+            with time_col2:
+                st.markdown("##### 🌅 Heures Normales")
+                normal_start = st.number_input(
+                    "Heure de début (0-23)",
+                    min_value=0,
+                    max_value=23,
+                    value=6,
+                    step=1,
+                    key="normal_start",
+                    help="Heure de début des heures normales (format 24h)"
+                )
+                normal_end = st.number_input(
+                    "Heure de fin (0-23)",
+                    min_value=0,
+                    max_value=23,
+                    value=18,
+                    step=1,
+                    key="normal_end",
+                    help="Heure de fin des heures normales (format 24h)"
+                )
+                
+            with time_col3:
+                st.markdown("##### 🔥 Heures de Pointe")
+                peak_start = st.number_input(
+                    "Heure de début (0-23)",
+                    min_value=0,
+                    max_value=23,
+                    value=18,
+                    step=1,
+                    key="peak_start",
+                    help="Heure de début des heures de pointe (format 24h)"
+                )
+                peak_end = st.number_input(
+                    "Heure de fin (0-23)",
+                    min_value=0,
+                    max_value=23,
+                    value=22,
+                    step=1,
+                    key="peak_end",
+                    help="Heure de fin des heures de pointe (format 24h)"
+                )
+            
+            # Function to check if hour is in range (handles overnight ranges)
+            def is_in_time_range(hour, start_hour, end_hour):
+                if start_hour <= end_hour:
+                    return start_hour <= hour < end_hour
+                else:  # Overnight range (e.g., 22h-6h)
+                    return hour >= start_hour or hour < end_hour
+            
+            # Validate time ranges
+            def validate_time_ranges():
+                # Create array to track which hours are covered
+                covered_hours = [False] * 24
+                conflicts = []
+                
+                # Check off-peak coverage
+                for hour in range(24):
+                    if is_in_time_range(hour, off_peak_start, off_peak_end):
+                        if covered_hours[hour]:
+                            conflicts.append(hour)
+                        covered_hours[hour] = True
+                
+                # Check normal coverage  
+                for hour in range(24):
+                    if is_in_time_range(hour, normal_start, normal_end):
+                        if covered_hours[hour]:
+                            conflicts.append(hour)
+                        covered_hours[hour] = True
+                
+                # Check peak coverage
+                for hour in range(24):
+                    if is_in_time_range(hour, peak_start, peak_end):
+                        if covered_hours[hour]:
+                            conflicts.append(hour)
+                        covered_hours[hour] = True
+                
+                uncovered_hours = [h for h, covered in enumerate(covered_hours) if not covered]
+                
+                return conflicts, uncovered_hours
+            
+            conflicts, uncovered = validate_time_ranges()
+            
+            if conflicts:
+                st.error(f"⚠️ Conflit détecté: Les heures {conflicts} sont couvertes par plusieurs périodes!")
+            if uncovered:
+                st.error(f"⚠️ Heures non couvertes: {uncovered}. Toutes les heures (0-23) doivent être assignées à une période.")
+            
+            if not conflicts and not uncovered:
+                st.success("✅ Configuration des plages horaires valide!")
+            
+            # Define time periods with user-configured ranges
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                hours_count = sum(1 for h in range(24) if is_in_time_range(h, off_peak_start, off_peak_end))
+                st.markdown(f"#### 🌙 Heures creuses ({off_peak_start}h-{off_peak_end}h)")
+                off_peak_rate = st.number_input(
+                    "Tarif heures creuses (DH/kWh)",
+                    min_value=0.01,
+                    max_value=10.0,
+                    value=0.8,
+                    step=0.01,
+                    key="off_peak",
+                    help="Généralement le tarif le plus bas"
+                )
+                st.caption(f"{off_peak_start:02d}h00 - {off_peak_end:02d}h00 ({hours_count} heures)")
+            
+            with col2:
+                hours_count = sum(1 for h in range(24) if is_in_time_range(h, normal_start, normal_end))
+                st.markdown(f"#### 🌅 Heures normales ({normal_start}h-{normal_end}h)")
+                normal_rate = st.number_input(
+                    "Tarif heures normales (DH/kWh)",
+                    min_value=0.01,
+                    max_value=10.0,
+                    value=1.2,
+                    step=0.01,
+                    key="normal",
+                    help="Tarif de base pendant la journée"
+                )
+                st.caption(f"{normal_start:02d}h00 - {normal_end:02d}h00 ({hours_count} heures)")
+            
+            with col3:
+                hours_count = sum(1 for h in range(24) if is_in_time_range(h, peak_start, peak_end))
+                st.markdown(f"#### 🔥 Heures de pointe ({peak_start}h-{peak_end}h)")
+                peak_rate = st.number_input(
+                    "Tarif heures de pointe (DH/kWh)",
+                    min_value=0.01,
+                    max_value=10.0,
+                    value=1.8,
+                    step=0.01,
+                    key="peak",
+                    help="Généralement le tarif le plus élevé"
+                )
+                st.caption(f"{peak_start:02d}h00 - {peak_end:02d}h00 ({hours_count} heures)")
+            
+            # Create hourly rates array based on user-defined ranges
+            hourly_rates = []
+            for hour in range(24):
+                if is_in_time_range(hour, off_peak_start, off_peak_end):
+                    hourly_rates.append(off_peak_rate)
+                elif is_in_time_range(hour, normal_start, normal_end):
+                    hourly_rates.append(normal_rate)
+                elif is_in_time_range(hour, peak_start, peak_end):
+                    hourly_rates.append(peak_rate)
+                else:
+                    # Fallback to normal rate if hour is not covered (shouldn't happen with validation)
+                    hourly_rates.append(normal_rate)
+            
+            # Show rate schedule visualization
+            st.markdown("#### 📊 Visualisation des tarifs par heure")
+            
+            rate_df = pd.DataFrame({
+                'Heure': list(range(24)),
+                'Tarif (DH/kWh)': hourly_rates,
+                'Période': [
+                    'Heures creuses' if is_in_time_range(h, off_peak_start, off_peak_end) else 
+                    'Heures normales' if is_in_time_range(h, normal_start, normal_end) else 
+                    'Heures de pointe' 
+                    for h in range(24)
+                ]
+            })
+            
+            fig_rates = px.bar(
+                rate_df, 
+                x='Heure', 
+                y='Tarif (DH/kWh)', 
+                color='Période',
+                title="Tarifs électriques par heure de la journée",
+                color_discrete_map={
+                    'Heures creuses': '#2E8B57',
+                    'Heures normales': '#4682B4', 
+                    'Heures de pointe': '#DC143C'
+                }
+            )
+            fig_rates.update_layout(height=300)
+            st.plotly_chart(fig_rates, use_container_width=True)
         
         # Calculs de base
         st.subheader("📊 Analyse des Coûts Actuels")
@@ -3007,9 +3834,47 @@ with tab9:
         avg_total_power = filtered_merged_data['Puissance_Generale'].mean()
         avg_pue = avg_total_power / avg_it_power if avg_it_power > 0 else 0
         
-        # Coûts horaires, journaliers, mensuels et annuels
-        hourly_cost = avg_total_power * electricity_rate
-        daily_cost = hourly_cost * 24
+        # Calculate variable costs based on actual data hourly consumption
+        if pricing_mode == "Tarifs variables par période de la journée":
+            # Add hour column to data
+            data_with_hour = filtered_merged_data.copy()
+            data_with_hour['Hour'] = data_with_hour['Timestamp'].dt.hour
+            
+            # Calculate hourly consumption and costs
+            hourly_consumption = data_with_hour.groupby('Hour').agg({
+                'Puissance_IT': 'mean',
+                'Puissance_CLIM': 'mean', 
+                'Puissance_Generale': 'mean'
+            }).fillna(0)
+            
+            # Calculate costs for each hour using variable rates
+            total_hourly_cost = 0
+            hourly_costs_detail = []
+            
+            for hour in range(24):
+                if hour in hourly_consumption.index:
+                    consumption = hourly_consumption.loc[hour, 'Puissance_Generale']
+                else:
+                    consumption = avg_total_power  # Use average if no data for that hour
+                
+                hour_cost = consumption * hourly_rates[hour]
+                total_hourly_cost += hour_cost
+                hourly_costs_detail.append({
+                    'hour': hour,
+                    'consumption': consumption,
+                    'rate': hourly_rates[hour],
+                    'cost': hour_cost
+                })
+            
+            # Average hourly cost (total daily cost / 24)
+            hourly_cost = total_hourly_cost / 24
+            daily_cost = total_hourly_cost
+            
+        else:
+            # Single rate calculation (existing logic)
+            hourly_cost = avg_total_power * hourly_rates[0]  # Use first rate (all same)
+            daily_cost = hourly_cost * 24
+        
         monthly_cost = daily_cost * 30
         annual_cost = daily_cost * 365
         
@@ -3025,7 +3890,7 @@ with tab9:
             st.metric(
                 "📅 Coût Journalier",
                 f"{currency_symbol}{daily_cost:.2f}",
-                delta=f"{currency_symbol}{daily_cost - (avg_it_power * 24 * electricity_rate):.2f} non-IT"
+                delta=f"{currency_symbol}{daily_cost - (avg_it_power * 24 * (sum(hourly_rates)/24)):.2f} non-IT"
             )
         with col3:
             st.metric(
@@ -3047,9 +3912,10 @@ with tab9:
         
         with col1:
             # Camembert de répartition
-            it_cost = avg_it_power * electricity_rate
-            clim_cost = avg_clim_power * electricity_rate
-            other_cost = (avg_total_power - avg_it_power - avg_clim_power) * electricity_rate
+            avg_rate = sum(hourly_rates) / 24  # Average rate across all hours
+            it_cost = avg_it_power * avg_rate
+            clim_cost = avg_clim_power * avg_rate
+            other_cost = (avg_total_power - avg_it_power - avg_clim_power) * avg_rate
             
             fig_pie = go.Figure(data=[go.Pie(
                 labels=['IT', 'Climatisation', 'Autres (éclairage, etc.)'],
@@ -3086,8 +3952,69 @@ with tab9:
                 use_container_width=True
             )
         
+        # Show detailed hourly analysis for variable pricing
+        if pricing_mode == "Tarifs variables par période de la journée":
+            st.subheader("📊 Analyse Détaillée des Coûts par Heure")
+            
+            # Create detailed hourly cost dataframe
+            hourly_detail_df = pd.DataFrame(hourly_costs_detail)
+            hourly_detail_df['Période'] = hourly_detail_df['hour'].apply(
+                lambda h: 'Heures creuses' if is_in_time_range(h, off_peak_start, off_peak_end) else 
+                         'Heures normales' if is_in_time_range(h, normal_start, normal_end) else 
+                         'Heures de pointe'
+            )
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                # Hourly cost chart
+                fig_hourly = px.bar(
+                    hourly_detail_df,
+                    x='hour',
+                    y='cost',
+                    color='Période',
+                    title="Coûts par heure de la journée",
+                    labels={'hour': 'Heure', 'cost': f'Coût ({currency_symbol})', 'Période': 'Période'},
+                    color_discrete_map={
+                        'Heures creuses': '#2E8B57',
+                        'Heures normales': '#4682B4', 
+                        'Heures de pointe': '#DC143C'
+                    }
+                )
+                fig_hourly.update_layout(height=400)
+                st.plotly_chart(fig_hourly, use_container_width=True)
+            
+            with col2:
+                # Cost by period summary
+                period_summary = hourly_detail_df.groupby('Période').agg({
+                    'cost': ['sum', 'mean'],
+                    'hour': 'count'
+                }).round(2)
+                period_summary.columns = ['Coût Total (DH)', 'Coût Moyen/h (DH)', 'Nb Heures']
+                period_summary['% du Total'] = (period_summary['Coût Total (DH)'] / daily_cost * 100).round(1)
+                
+                st.markdown("**Résumé par période:**")
+                st.dataframe(
+                    period_summary.style.format({
+                        'Coût Total (DH)': '{:.2f}',
+                        'Coût Moyen/h (DH)': '{:.2f}',
+                        '% du Total': '{:.1f}%'
+                    }),
+                    use_container_width=True
+                )
+                
+                # Show potential savings tip
+                peak_cost = period_summary.loc['Heures de pointe', 'Coût Total (DH)'] if 'Heures de pointe' in period_summary.index else 0
+                off_peak_cost = period_summary.loc['Heures creuses', 'Coût Total (DH)'] if 'Heures creuses' in period_summary.index else 0
+                
+                if peak_cost > 0:
+                    st.info(f"💡 **Optimisation suggérée:** Les heures de pointe représentent {(peak_cost/daily_cost*100):.1f}% du coût quotidien. Considérez décaler certaines charges non-critiques vers les heures creuses.")
+        
         # Simulation d'optimisation
         st.subheader("🚀 Simulation d'Optimisation")
+        
+        # Add simulate button
+        st.info("💡 Ajustez les paramètres ci-dessous et cliquez sur 'Simuler' pour voir les économies potentielles.")
         
         col1, col2 = st.columns(2)
         
@@ -3116,110 +4043,115 @@ with tab9:
                 help="Impact d'une augmentation de la température de consigne"
             )
         
-        # Calcul des économies potentielles
-        new_total_power = avg_it_power * target_pue
-        power_savings = avg_total_power - new_total_power
+        # Add simulate button
+        simulate_button = st.button("🔄 Simuler les Économies", type="primary", use_container_width=True)
         
-        # Estimation de l'impact de la température (règle empirique : 4% d'économie par °C)
-        temp_savings_percent = temp_increase * 0.04
-        clim_savings = avg_clim_power * temp_savings_percent
-        total_savings = power_savings + clim_savings
-        
-        # Affichage des économies
-        st.subheader("💰 Économies Potentielles")
-        
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            hourly_savings = total_savings * electricity_rate
-            st.metric(
-                "Économies/heure",
-                f"{currency_symbol}{hourly_savings:.2f}",
-                delta=f"-{(total_savings/avg_total_power)*100:.1f}%"
-            )
-        
-        with col2:
-            monthly_savings = hourly_savings * 720
-            st.metric(
-                "Économies/mois",
-                f"{currency_symbol}{monthly_savings:,.2f}",
-                help="Sur base de 720 heures"
-            )
-        
-        with col3:
-            annual_savings = hourly_savings * 8760
-            st.metric(
-                "Économies/an",
-                f"{currency_symbol}{annual_savings:,.2f}",
-                help="Sur base de 8760 heures"
-            )
-        
-        # Graphique de comparaison
-        fig_comparison = go.Figure()
-        
-        categories = ['Actuel', f'PUE {target_pue}', f'+{temp_increase}°C', 'Optimisé']
-        it_costs = [avg_it_power * electricity_rate] * 4
-        clim_costs = [avg_clim_power * electricity_rate,
-                     avg_clim_power * electricity_rate,
-                     avg_clim_power * (1 - temp_savings_percent) * electricity_rate,
-                     (new_total_power - avg_it_power - clim_savings) * electricity_rate]
-        other_costs = [(avg_total_power - avg_it_power - avg_clim_power) * electricity_rate,
-                      (new_total_power - avg_it_power - avg_clim_power) * electricity_rate,
-                      (avg_total_power - avg_it_power - avg_clim_power) * electricity_rate,
-                      0]
-        
-        fig_comparison.add_trace(go.Bar(name='IT', x=categories, y=it_costs, marker_color='#1f77b4'))
-        fig_comparison.add_trace(go.Bar(name='Climatisation', x=categories, y=clim_costs, marker_color='#ff7f0e'))
-        fig_comparison.add_trace(go.Bar(name='Autres', x=categories, y=other_costs, marker_color='#2ca02c'))
-        
-        fig_comparison.update_layout(
-            title=f"Comparaison des scénarios de coûts ({currency_symbol}/heure)",
-            barmode='stack',
-            yaxis_title=f"Coût ({currency_symbol}/h)",
-            height=400
-        )
-        
-        st.plotly_chart(fig_comparison, use_container_width=True)
-        
-        # ROI et temps de retour
-        st.subheader("📈 Retour sur Investissement")
-        
-        investment = st.number_input(
-            f"💼 Investissement estimé pour optimisation ({currency_symbol})",
-            min_value=0,
-            value=50000,
-            step=1000,
-            help="Coût estimé des améliorations (isolation, free cooling, etc.)"
-        )
-        
-        if annual_savings > 0 and investment > 0:
-            roi_years = investment / annual_savings
-            roi_months = roi_years * 12
+        if simulate_button or True:  # Always show results for better UX
+            # Calcul des économies potentielles
+            new_total_power = avg_it_power * target_pue
+            power_savings = avg_total_power - new_total_power
+            
+            # Estimation de l'impact de la température (règle empirique : 4% d'économie par °C)
+            temp_savings_percent =1- temp_increase * 0.04
+            clim_savings = avg_clim_power * temp_savings_percent
+            total_savings = power_savings + clim_savings
+            
+            # Affichage des économies
+            st.subheader("💰 Économies Potentielles")
             
             col1, col2, col3 = st.columns(3)
             
             with col1:
+                avg_rate = sum(hourly_rates) / 24  # Use average rate for savings calculation
+                hourly_savings = total_savings * avg_rate
                 st.metric(
-                    "⏱️ Temps de retour",
-                    f"{roi_years:.1f} ans",
-                    help="Durée pour récupérer l'investissement"
+                    "Économies/heure",
+                    f"{currency_symbol}{hourly_savings:.2f}",
+                    delta=f"-{(total_savings/avg_total_power)*100:.1f}%"
                 )
             
             with col2:
-                roi_percent = (annual_savings / investment) * 100
+                monthly_savings = hourly_savings * 720
                 st.metric(
-                    "📊 ROI annuel",
-                    f"{roi_percent:.1f}%",
-                    help="Retour sur investissement par an"
+                    "Économies/mois",
+                    f"{currency_symbol}{monthly_savings:,.2f}",
+                    help="Sur base de 720 heures"
                 )
             
             with col3:
-                five_year_profit = (annual_savings * 5) - investment
+                annual_savings = hourly_savings * 8760
                 st.metric(
-                    "💵 Profit sur 5 ans",
-                    f"{currency_symbol}{five_year_profit:,.0f}",
-                    help="Économies nettes après investissement"
+                    "Économies/an",
+                    f"{currency_symbol}{annual_savings:,.2f}",
+                    help="Sur base de 8760 heures"
                 )
+        
+            # Graphique de comparaison
+            fig_comparison = go.Figure()
+            
+            categories = ['Actuel', f'PUE {target_pue}', f'+{temp_increase}°C', 'Optimisé']
+            it_costs = [avg_it_power * avg_rate] * 4
+            clim_costs = [avg_clim_power * avg_rate,
+                         avg_clim_power * avg_rate,
+                         avg_clim_power * (1 - temp_savings_percent) * avg_rate,
+                         (new_total_power - avg_it_power - clim_savings) * avg_rate]
+            other_costs = [(avg_total_power - avg_it_power - avg_clim_power) * avg_rate,
+                          (new_total_power - avg_it_power - avg_clim_power) * avg_rate,
+                          (avg_total_power - avg_it_power - avg_clim_power) * avg_rate,
+                          0]
+        
+            fig_comparison.add_trace(go.Bar(name='IT', x=categories, y=it_costs, marker_color='#1f77b4'))
+            fig_comparison.add_trace(go.Bar(name='Climatisation', x=categories, y=clim_costs, marker_color='#ff7f0e'))
+            fig_comparison.add_trace(go.Bar(name='Autres', x=categories, y=other_costs, marker_color='#2ca02c'))
+            
+            fig_comparison.update_layout(
+                title=f"Comparaison des scénarios de coûts ({currency_symbol}/heure)",
+                barmode='stack',
+                yaxis_title=f"Coût ({currency_symbol}/h)",
+                height=400
+            )
+            
+            st.plotly_chart(fig_comparison, use_container_width=True)
+            
+            # ROI et temps de retour
+            st.subheader("📈 Retour sur Investissement")
+            
+            investment = st.number_input(
+                f"💼 Investissement estimé pour optimisation ({currency_symbol})",
+                min_value=0,
+                value=50000,
+                step=1000,
+                help="Coût estimé des améliorations (isolation, free cooling, etc.)"
+            )
+            
+            if annual_savings > 0 and investment > 0:
+                roi_years = investment / annual_savings
+                roi_months = roi_years * 12
+                
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    st.metric(
+                        "⏱️ Temps de retour",
+                        f"{roi_years:.1f} ans",
+                        help="Durée pour récupérer l'investissement"
+                    )
+                
+                with col2:
+                    roi_percent = (annual_savings / investment) * 100
+                    st.metric(
+                        "📊 ROI annuel",
+                        f"{roi_percent:.1f}%",
+                        help="Retour sur investissement par an"
+                    )
+                
+                with col3:
+                    five_year_profit = (annual_savings * 5) - investment
+                    st.metric(
+                        "💵 Profit sur 5 ans",
+                        f"{currency_symbol}{five_year_profit:,.0f}",
+                        help="Économies nettes après investissement"
+                    )
         
         # Recommandations personnalisées
         st.subheader("🎯 Recommandations Personnalisées")
@@ -3254,4 +4186,4 @@ with tab9:
 
 # Footer
 st.markdown("---")
-st.caption("🏢 BGU-ONE Data Center Monitoring Dashboard | © 2025")
+st.caption("🏢 Data Center Monitoring Dashboard | © 2025")
