@@ -1,6 +1,4 @@
-history:GTC_Multisite_Inwi/BGU-ONE T°c Ambiante;;;
-;;;
-Timestamp;Trend Flags;Status;Value (°C)
+Timestamp;Trend Flags;Status;Value (Â°C)
 23-Dec-24 4:30:00 PM WEST;{start};{ok};21.5
 23-Dec-24 4:45:00 PM WEST;{ };{ok};21.8
 23-Dec-24 5:00:00 PM WEST;{ };{ok};21.8

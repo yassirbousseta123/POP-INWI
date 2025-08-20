@@ -115,7 +115,7 @@ class RootCauseAnalyzer:
             'door_state': ['Etat de porte', 'Status_porte', 'Door_Status', 'Porte', 'Door'],
             'external_temp': ['T°C EXTERIEURE', 'T°C_EXT', 'External_Temp', 'Temp_Ext', 'Temperature_External'],
             'ambient_temp': ['T°C AMBIANTE', 'T°C_AMB', 'Ambient_Temp', 'Temp_Amb', 'Temperature_Ambient'],
-            'it_power': ['Puissance_IT', 'P_Active Générale', 'IT_Power', 'Power_IT', 'Puissance IT', 'puissance_it', 'PUISSANCE_IT'],
+            'it_power': ['Puissance_IT', 'IT_Power', 'Power_IT', 'Puissance IT', 'puissance_it', 'PUISSANCE_IT'],
             'clim_pattern': ['CLIM.*Status', 'CLIM.*_Status', 'clim.*status']  # Regex pattern for CLIM status columns
         }
         
@@ -156,10 +156,9 @@ class RootCauseAnalyzer:
         if ambient_col and external_col and ambient_col in self.data.columns and external_col in self.data.columns:
             self.data['temp_differential'] = self.data[ambient_col] - self.data[external_col]
             
-        # Power metrics using mapped columns
-        power_col = self._get_column_name('it_power')
-        if power_col and power_col in self.data.columns:
-            self.data['power_change_rate'] = self.data[power_col].diff()
+        # Power metrics using calculated IT power column
+        if 'Puissance_IT' in self.data.columns:
+            self.data['power_change_rate'] = self.data['Puissance_IT'].diff()
             
         # Door open duration using mapped columns
         door_col = self._get_column_name('door_state')
@@ -224,16 +223,14 @@ class RootCauseAnalyzer:
                 is_reliable = col_std > 0.1 or (col_std == 0 and not pd.isna(col_mean))
                 reliability_scores.append(1.0 if is_reliable else 0.5)
         
-        # Check power column reliability
-        power_col = self._get_column_name('it_power')
-        if power_col and power_col in period_data.columns:
-            if col in period_data.columns:
-                # Check if sensor is stuck (no variation)
-                col_std = period_data[col].std()
-                col_mean = period_data[col].mean()
-                # Sensor is reliable if it shows variation or is legitimately constant
-                is_reliable = col_std > 0.1 or (col_std == 0 and not pd.isna(col_mean))
-                reliability_scores.append(1.0 if is_reliable else 0.5)
+        # Check IT power column reliability
+        if 'Puissance_IT' in period_data.columns:
+            # Check if sensor is stuck (no variation)
+            power_std = period_data['Puissance_IT'].std()
+            power_mean = period_data['Puissance_IT'].mean()
+            # Sensor is reliable if it shows variation or is legitimately constant
+            is_reliable = power_std > 0.1 or (power_std == 0 and not pd.isna(power_mean))
+            reliability_scores.append(1.0 if is_reliable else 0.5)
                 
         reliability = np.mean(reliability_scores) if reliability_scores else 0.5
         
@@ -520,9 +517,9 @@ class RootCauseAnalyzer:
     def _analyze_power_context(self, window_data: pd.DataFrame, incident_time: datetime) -> Dict[str, Any]:
         """Analyze IT power consumption 24h before, during, and after incident"""
         try:
-            # Try multiple column names for power data
+            # Try multiple column names for IT power data (prioritize calculated IT power)
             power_col = None
-            power_variations = ['P_Active Général', 'P_Active Générale', 'puissance_it', 'Puissance_IT', 'IT_Power']
+            power_variations = ['Puissance_IT', 'puissance_it', 'IT_Power', 'Power_IT', 'PUISSANCE_IT']
             
             for col_name in power_variations:
                 if col_name in self.data.columns:
@@ -530,12 +527,8 @@ class RootCauseAnalyzer:
                     break
             
             if not power_col:
-                # Check columns with partial matches
-                power_candidates = [col for col in self.data.columns if any(keyword in col.lower() for keyword in ['p_active', 'général', 'generale'])]
-                if power_candidates:
-                    power_col = power_candidates[0]
-                else:
-                    return {"status": "Données manquantes", "severity": "unknown", "description": "Capteur puissance indisponible"}
+                # No fallback to total power - IT power should be properly calculated
+                return {"status": "Puissance IT non disponible", "severity": "unknown", "description": "Colonne Puissance_IT manquante - vérifier le préprocesseur"}
             
             # Get IT power data for different time periods
             power_24h_before = self._get_power_stats(incident_time - timedelta(hours=24), incident_time - timedelta(hours=23), power_col)
@@ -1628,8 +1621,14 @@ class PowerCauseDetector:
         incident = context['incident']
         data_quality = context.get('data_quality')
         
-        power_col = self._get_column_name('it_power')
-        if not power_col or power_col not in data.columns:
+        # Get IT power column - should be Puissance_IT after preprocessing
+        power_col = None
+        for col_name in ['Puissance_IT', 'puissance_it', 'IT_Power', 'Power_IT', 'PUISSANCE_IT']:
+            if col_name in data.columns:
+                power_col = col_name
+                break
+        
+        if not power_col:
             return causes
             
         # Get power context around incident
@@ -1820,7 +1819,7 @@ class PowerCauseDetector:
             cause_type=RootCauseType.IT_POWER_SURGE,
             confidence=base_confidence,
             description=f"Pic de consommation IT détecté - variation max: {max_change:.1f}kW",
-            affected_metrics=[self._get_column_name('it_power') or 'P_Active Générale', 'T°C AMBIANTE'],
+            affected_metrics=['Puissance_IT', 'T°C AMBIANTE'],
             severity="medium"
         )
         
@@ -1867,7 +1866,7 @@ class PowerCauseDetector:
             cause_type=RootCauseType.IT_POWER_HIGH_SUSTAINED,
             confidence=base_confidence,
             description=description,
-            affected_metrics=[self._get_column_name('it_power') or 'P_Active Générale', 'PUE'],
+            affected_metrics=['Puissance_IT', 'PUE'],
             severity="medium"
         )
         
@@ -1903,7 +1902,7 @@ class PowerCauseDetector:
             cause_type=RootCauseType.PUE_DEGRADATION,
             confidence=base_confidence,
             description=f"Efficacité énergétique dégradée - PUE moyen: {avg_pue:.2f}",
-            affected_metrics=['PUE', 'P_Active CLIM', self._get_column_name('it_power') or 'P_Active Générale'],
+            affected_metrics=['PUE', 'P_Active CLIM', 'Puissance_IT'],
             severity="medium"
         )
         

@@ -20,14 +20,18 @@ class DataPreprocessor:
     Handles data loading, cleaning, validation, and optimization for analysis
     """
     
-    def __init__(self, data_directory: str = "data"):
+    def __init__(self, data_directory: str = "data", region: str = "Marrakech", site: str = "BGU-ONE"):
         """
         Initialize preprocessor
         
         Args:
             data_directory: Path to directory containing CSV files
+            region: Region name (e.g., "Marrakech")
+            site: Site name (e.g., "BGU-ONE")
         """
         self.data_dir = Path(data_directory)
+        self.region = region
+        self.site = site
         self.cached_data = None
         self.last_load_time = None
         self.file_mapping = self._discover_data_files()
@@ -38,18 +42,58 @@ class DataPreprocessor:
             logger.warning(f"Data directory not found: {self.data_dir}")
             return {}
             
-        # Expected file patterns based on project structure
+        # Try new hierarchical structure first
+        site_dir = self.data_dir / self.region / self.site
+        if site_dir.exists():
+            logger.info(f"Using hierarchical structure: {site_dir}")
+            return self._discover_files_hierarchical(site_dir)
+        else:
+            logger.info(f"Site directory not found: {site_dir}, trying flat structure")
+            return self._discover_files_flat()
+    
+    def _discover_files_hierarchical(self, site_dir: Path) -> Dict[str, str]:
+        """Discover files in new hierarchical structure"""
+        # New file patterns for hierarchical structure
+        file_patterns = {
+            'temperature_ambient': 'Température Ambiante.csv',
+            'temperature_external': 'Température Extérieure.csv',
+            'door_state': 'Etat Porte.csv',
+            'clim_a': 'Etat CLIM A.csv',
+            'clim_b': 'Etat CLIM B.csv',
+            'clim_c': 'Etat CLIM C.csv',
+            'clim_d': 'Etat CLIM D.csv',
+            'power_clim': 'P.Active CLIM.csv',
+            'power_general': 'P.Active Générale.csv',
+            # 'power_it' will be calculated from total - clim power
+            'generator': 'Etat GE.csv'
+        }
+        
+        discovered_files = {}
+        
+        for data_type, filename in file_patterns.items():
+            file_path = site_dir / filename
+            if file_path.exists():
+                discovered_files[data_type] = str(file_path)
+                logger.info(f"Found {data_type}: {filename}")
+            else:
+                logger.debug(f"No file found: {filename}")
+                
+        return discovered_files
+        
+    def _discover_files_flat(self) -> Dict[str, str]:
+        """Discover files in old flat structure (backward compatibility)"""
+        # Old file patterns for flat structure
         file_patterns = {
             'temperature_ambient': '*T°C AMBIANTE*.csv',
             'temperature_external': '*T°C EXTERIEURE*.csv',
             'door_state': '*Etat de porte*.csv',
             'clim_a': '*Etat CLIM A*.csv',
-            'clim_b': '*Etat CLIM B*.csv', 
+            'clim_b': '*Etat CLIM B*.csv',
             'clim_c': '*Etat CLIM C*.csv',
             'clim_d': '*Etat CLIM D*.csv',
             'power_clim': '*P_Active CLIM*.csv',
             'power_general': '*P_Active G*n*ral*.csv',  # Handle accent variations
-            'power_it': '*P_Active G*n*ral*.csv',  # Using general power as IT power
+            # 'power_it' will be calculated from total - clim power
             'generator': '*Etat GE*.csv'
         }
         
@@ -475,7 +519,7 @@ class DataPreprocessor:
             'temperature_external': 'T°C EXTERIEURE', 
             'power_clim': 'P_Active CLIM',
             'power_general': 'P_Active Générale',
-            'power_it': 'P_Active Générale',  # Using general power as IT power
+            # 'power_it' will be calculated later from total - clim power
             'clim_a': 'CLIM_A_Status',
             'clim_b': 'CLIM_B_Status',
             'clim_c': 'CLIM_C_Status',
@@ -520,10 +564,22 @@ class DataPreprocessor:
             logger.info(f"Successfully merged data: {len(merged)} rows, {len(merged.columns)} columns")
             logger.debug(f"Final columns: {list(merged.columns)}")
             
-            # Add Puissance_IT as an alias for P_Active Générale if it's not already there
-            if 'P_Active Générale' in merged.columns and 'Puissance_IT' not in merged.columns:
+            # Calculate Puissance_IT properly: IT Power = Total Power - CLIM Power
+            # Always recalculate to ensure correct values
+            if ('P_Active Générale' in merged.columns and 
+                'P_Active CLIM' in merged.columns):
+                
+                # Convert to numeric to handle any string values
+                total_power = pd.to_numeric(merged['P_Active Générale'], errors='coerce')
+                clim_power = pd.to_numeric(merged['P_Active CLIM'], errors='coerce')
+                
+                # Calculate IT power as Total - CLIM (with minimum of 0)
+                merged['Puissance_IT'] = (total_power - clim_power).clip(lower=0)
+                logger.debug("Calculated Puissance_IT as Total Power - CLIM Power")
+            elif 'P_Active Générale' in merged.columns:
+                # Fallback: use total power if CLIM power not available
                 merged['Puissance_IT'] = merged['P_Active Générale']
-                logger.debug("Added Puissance_IT as alias for P_Active Générale")
+                logger.debug("Using P_Active Générale as Puissance_IT (CLIM power not available)")
             
             return merged
             
@@ -586,6 +642,7 @@ class DataPreprocessor:
     def _add_derived_metrics(self, df: pd.DataFrame) -> pd.DataFrame:
         """Add computed metrics for faster analysis"""
         enriched = df.copy()
+        
         
         # CLIM metrics
         clim_cols = ['CLIM_A_Status', 'CLIM_B_Status', 'CLIM_C_Status', 'CLIM_D_Status']

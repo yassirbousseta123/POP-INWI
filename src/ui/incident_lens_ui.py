@@ -40,9 +40,9 @@ def render_incident_lens_interface(data=None, start_date=None, end_date=None):
     **Objectif**: Identifier automatiquement les causes des anomalies de température avec des scores de confiance.
     """)
     
-    # Initialize session state
+    # Initialize session state with BGU-ONE configuration
     if 'preprocessor' not in st.session_state:
-        st.session_state.preprocessor = DataPreprocessor('data')
+        st.session_state.preprocessor = DataPreprocessor('data', region='Marrakech', site='BGU-ONE')
     if 'analysis_results' not in st.session_state:
         st.session_state.analysis_results = None
     
